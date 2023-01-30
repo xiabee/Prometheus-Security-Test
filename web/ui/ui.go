@@ -11,7 +11,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !builtinassets
 // +build !builtinassets
 
 package ui
@@ -57,7 +56,15 @@ var Assets = func() http.FileSystem {
 		},
 	)
 
+	templates := filter.Keep(
+		http.Dir(path.Join(assetsPrefix, "templates")),
+		func(path string, fi os.FileInfo) bool {
+			return fi.IsDir() || strings.HasSuffix(path, ".html")
+		},
+	)
+
 	return union.New(map[string]http.FileSystem{
-		"/static": static,
+		"/templates": templates,
+		"/static":    static,
 	})
 }()

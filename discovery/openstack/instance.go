@@ -18,13 +18,14 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/floatingips"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/pagination"
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 
 	"github.com/prometheus/prometheus/discovery/targetgroup"
@@ -58,15 +59,12 @@ type InstanceDiscovery struct {
 
 // NewInstanceDiscovery returns a new instance discovery.
 func newInstanceDiscovery(provider *gophercloud.ProviderClient, opts *gophercloud.AuthOptions,
-	port int, region string, allTenants bool, availability gophercloud.Availability, l log.Logger,
-) *InstanceDiscovery {
+	port int, region string, allTenants bool, availability gophercloud.Availability, l log.Logger) *InstanceDiscovery {
 	if l == nil {
 		l = log.NewNopLogger()
 	}
-	return &InstanceDiscovery{
-		provider: provider, authOpts: opts,
-		region: region, port: port, allTenants: allTenants, availability: availability, logger: l,
-	}
+	return &InstanceDiscovery{provider: provider, authOpts: opts,
+		region: region, port: port, allTenants: allTenants, availability: availability, logger: l}
 }
 
 type floatingIPKey struct {
@@ -78,14 +76,14 @@ func (i *InstanceDiscovery) refresh(ctx context.Context) ([]*targetgroup.Group, 
 	i.provider.Context = ctx
 	err := openstack.Authenticate(i.provider, *i.authOpts)
 	if err != nil {
-		return nil, fmt.Errorf("could not authenticate to OpenStack: %w", err)
+		return nil, errors.Wrap(err, "could not authenticate to OpenStack")
 	}
 
 	client, err := openstack.NewComputeV2(i.provider, gophercloud.EndpointOpts{
 		Region: i.region, Availability: i.availability,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("could not create OpenStack compute session: %w", err)
+		return nil, errors.Wrap(err, "could not create OpenStack compute session")
 	}
 
 	// OpenStack API reference
@@ -96,7 +94,7 @@ func (i *InstanceDiscovery) refresh(ctx context.Context) ([]*targetgroup.Group, 
 	err = pagerFIP.EachPage(func(page pagination.Page) (bool, error) {
 		result, err := floatingips.ExtractFloatingIPs(page)
 		if err != nil {
-			return false, fmt.Errorf("could not extract floatingips: %w", err)
+			return false, errors.Wrap(err, "could not extract floatingips")
 		}
 		for _, ip := range result {
 			// Skip not associated ips
@@ -123,11 +121,11 @@ func (i *InstanceDiscovery) refresh(ctx context.Context) ([]*targetgroup.Group, 
 	}
 	err = pager.EachPage(func(page pagination.Page) (bool, error) {
 		if ctx.Err() != nil {
-			return false, fmt.Errorf("could not extract instances: %w", ctx.Err())
+			return false, errors.Wrap(ctx.Err(), "could not extract instances")
 		}
 		instanceList, err := servers.ExtractServers(page)
 		if err != nil {
-			return false, fmt.Errorf("could not extract instances: %w", err)
+			return false, errors.Wrap(err, "could not extract instances")
 		}
 
 		for _, s := range instanceList {

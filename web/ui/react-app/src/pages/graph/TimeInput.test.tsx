@@ -14,7 +14,6 @@ describe('TimeInput', () => {
     onChangeTime: (): void => {
       // Do nothing.
     },
-    useLocalTime: false,
   };
   const timeInput = shallow(<TimeInput {...timeInputProps} />);
   it('renders the string "scalar"', () => {
@@ -40,11 +39,11 @@ describe('TimeInput', () => {
         title: 'Increase time',
         icon: faChevronRight,
       },
-    ].forEach((button) => {
+    ].forEach(button => {
       const onChangeTime = sinon.spy();
       const timeInput = shallow(<TimeInput {...timeInputProps} onChangeTime={onChangeTime} />);
-      const addon = timeInput.find(InputGroupAddon).filterWhere((addon) => addon.prop('addonType') === button.position);
-      const btn = addon.find(Button).filterWhere((btn) => btn.prop('title') === button.title);
+      const addon = timeInput.find(InputGroupAddon).filterWhere(addon => addon.prop('addonType') === button.position);
+      const btn = addon.find(Button).filterWhere(btn => btn.prop('title') === button.title);
       const icon = btn.find(FontAwesomeIcon);
       expect(icon.prop('icon')).toEqual(button.icon);
       expect(icon.prop('fixedWidth')).toBe(true);

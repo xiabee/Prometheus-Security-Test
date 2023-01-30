@@ -15,7 +15,6 @@ package aws
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -28,7 +27,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/lightsail"
-	"github.com/go-kit/log"
+	"github.com/go-kit/kit/log"
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
 
@@ -49,16 +49,17 @@ const (
 	lightsailLabelIPv6Addresses       = lightsailLabel + "ipv6_addresses"
 	lightsailLabelPrivateIP           = lightsailLabel + "private_ip"
 	lightsailLabelPublicIP            = lightsailLabel + "public_ip"
-	lightsailLabelRegion              = lightsailLabel + "region"
 	lightsailLabelTag                 = lightsailLabel + "tag_"
 	lightsailLabelSeparator           = ","
 )
 
-// DefaultLightsailSDConfig is the default Lightsail SD configuration.
-var DefaultLightsailSDConfig = LightsailSDConfig{
-	Port:            80,
-	RefreshInterval: model.Duration(60 * time.Second),
-}
+var (
+	// DefaultLightsailSDConfig is the default Lightsail SD configuration.
+	DefaultLightsailSDConfig = LightsailSDConfig{
+		Port:            80,
+		RefreshInterval: model.Duration(60 * time.Second),
+	}
+)
 
 func init() {
 	discovery.RegisterConfig(&LightsailSDConfig{})
@@ -153,7 +154,7 @@ func (d *LightsailDiscovery) lightsailClient() (*lightsail.Lightsail, error) {
 		Profile: d.cfg.Profile,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("could not create aws session: %w", err)
+		return nil, errors.Wrap(err, "could not create aws session")
 	}
 
 	if d.cfg.RoleARN != "" {
@@ -180,11 +181,10 @@ func (d *LightsailDiscovery) refresh(ctx context.Context) ([]*targetgroup.Group,
 
 	output, err := lightsailClient.GetInstancesWithContext(ctx, input)
 	if err != nil {
-		var awsErr awserr.Error
-		if errors.As(err, &awsErr) && (awsErr.Code() == "AuthFailure" || awsErr.Code() == "UnauthorizedOperation") {
+		if awsErr, ok := err.(awserr.Error); ok && (awsErr.Code() == "AuthFailure" || awsErr.Code() == "UnauthorizedOperation") {
 			d.lightsail = nil
 		}
-		return nil, fmt.Errorf("could not get instances: %w", err)
+		return nil, errors.Wrap(err, "could not get instances")
 	}
 
 	for _, inst := range output.Instances {
@@ -200,7 +200,6 @@ func (d *LightsailDiscovery) refresh(ctx context.Context) ([]*targetgroup.Group,
 			lightsailLabelInstanceState:       model.LabelValue(*inst.State.Name),
 			lightsailLabelInstanceSupportCode: model.LabelValue(*inst.SupportCode),
 			lightsailLabelPrivateIP:           model.LabelValue(*inst.PrivateIpAddress),
-			lightsailLabelRegion:              model.LabelValue(d.cfg.Region),
 		}
 
 		addr := net.JoinHostPort(*inst.PrivateIpAddress, fmt.Sprintf("%d", d.cfg.Port))

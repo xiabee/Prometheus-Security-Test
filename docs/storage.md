@@ -27,7 +27,7 @@ replayed when the Prometheus server restarts. Write-ahead log files are stored
 in the `wal` directory in 128MB segments. These files contain raw data that
 has not yet been compacted; thus they are significantly larger than regular block
 files. Prometheus will retain a minimum of three write-ahead log files.
-High-traffic servers may retain more than three WAL files in order to keep at
+High-traffic servers may retain more than three WAL files in order to to keep at
 least two hours of raw data.
 
 A Prometheus server's data directory looks something like this:
@@ -82,7 +82,7 @@ Prometheus has several flags that configure local storage. The most important ar
 
 * `--storage.tsdb.path`: Where Prometheus writes its database. Defaults to `data/`.
 * `--storage.tsdb.retention.time`: When to remove old data. Defaults to `15d`. Overrides `storage.tsdb.retention` if this flag is set to anything other than default.
-* `--storage.tsdb.retention.size`: The maximum number of bytes of storage blocks to retain. The oldest data will be removed first. Defaults to `0` or disabled. Units supported: B, KB, MB, GB, TB, PB, EB. Ex: "512MB". Based on powers-of-2, so 1KB is 1024B. Only the persistent blocks are deleted to honor this retention although WAL and m-mapped chunks are counted in the total size. So the minimum requirement for the disk is the peak space taken by the `wal` (the WAL and Checkpoint) and `chunks_head` (m-mapped Head chunks) directory combined (peaks every 2 hours).
+* `--storage.tsdb.retention.size`: [EXPERIMENTAL] The maximum number of bytes of storage blocks to retain. The oldest data will be removed first. Defaults to `0` or disabled. This flag is experimental and may change in future releases. Units supported: B, KB, MB, GB, TB, PB, EB. Ex: "512MB"
 * `--storage.tsdb.retention`: Deprecated in favor of `storage.tsdb.retention.time`.
 * `--storage.tsdb.wal-compression`: Enables compression of the write-ahead log (WAL). Depending on your data, you can expect the WAL size to be halved with little extra cpu load. This flag was introduced in 2.11.0 and enabled by default in 2.20.0. Note that once enabled, downgrading Prometheus to a version below 2.11.0 will require deleting the WAL.
 
@@ -129,7 +129,7 @@ The read and write protocols both use a snappy-compressed protocol buffer encodi
 
 For details on configuring remote storage integrations in Prometheus, see the [remote write](configuration/configuration.md#remote_write) and [remote read](configuration/configuration.md#remote_read) sections of the Prometheus configuration documentation.
 
-The built-in remote write receiver can be enabled by setting the `--web.enable-remote-write-receiver` command line flag. When enabled, the remote write receiver endpoint is `/api/v1/write`.
+The built-in remote write receiver can be enabled by setting the `--enable-feature=remote-write-receiver` command line flag. When enabled, the remote write receiver endpoint is `/api/v1/write`.
 
 For details on the request and response messages, see the [remote storage protocol buffer definitions](https://github.com/prometheus/prometheus/blob/main/prompb/remote.proto).
 
@@ -155,17 +155,7 @@ Backfilling can be used via the Promtool command line. Promtool will write the b
 promtool tsdb create-blocks-from openmetrics <input file> [<output directory>]
 ```
 
-After the creation of the blocks, move it to the data directory of Prometheus. If there is an overlap with the existing blocks in Prometheus, the flag `--storage.tsdb.allow-overlapping-blocks` needs to be set for Prometheus versions v2.38 and below. Note that any backfilled data is subject to the retention configured for your Prometheus server (by time or size).
-
-#### Longer Block Durations
-
-By default, the promtool will use the default block duration (2h) for the blocks; this behavior is the most generally applicable and correct. However, when backfilling data over a long range of times, it may be advantageous to use a larger value for the block duration to backfill faster and prevent additional compactions by TSDB later.
-
-The `--max-block-duration` flag allows the user to configure a maximum duration of blocks. The backfilling tool will pick a suitable block duration no larger than this.
-
-While larger blocks may improve the performance of backfilling large datasets, drawbacks exist as well. Time-based retention policies must keep the entire block around if even one sample of the (potentially large) block is still within the retention policy. Conversely, size-based retention policies will remove the entire block even if the TSDB only goes over the size limit in a minor way.
-
-Therefore, backfilling with few blocks, thereby choosing a larger block duration, must be done with care and is not recommended for any production instances.
+After the creation of the blocks, move it to the data directory of Prometheus. If there is an overlap with the existing blocks in Prometheus, the flag `--storage.tsdb.allow-overlapping-blocks` needs to be set. Note that any backfilled data is subject to the retention configured for your Prometheus server (by time or size).
 
 ## Backfilling for Recording Rules
 
@@ -178,7 +168,6 @@ When a new recording rule is created, there is no historical data for it. Record
 To see all options, use: `$ promtool tsdb create-blocks-from rules --help`.
 
 Example usage:
-
 ```
 $ promtool tsdb create-blocks-from rules \
     --start 1617079873 \
@@ -189,7 +178,7 @@ $ promtool tsdb create-blocks-from rules \
 
 The recording rule files provided should be a normal [Prometheus rules file](https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/).
 
-The output of `promtool tsdb create-blocks-from rules` command is a directory that contains blocks with the historical rule data for all rules in the recording rule files. By default, the output directory is `data/`. In order to make use of this new block data, the blocks must be moved to a running Prometheus instance data dir `storage.tsdb.path` (for Prometheus versions v2.38 and below, the flag `--storage.tsdb.allow-overlapping-blocks` must be enabled). Once moved, the new blocks will merge with existing blocks when the next compaction runs.
+The output of `promtool tsdb create-blocks-from rules` command is a directory that contains blocks with the historical rule data for all rules in the recording rule files. By default the output directory is `data/`. In order to make use of this new block data, the blocks must be moved to a running Prometheus instance data dir `storage.tsdb.path` that has the flag `--storage.tsdb.allow-overlapping-blocks` enabled. Once moved, the new blocks will merge with existing blocks when the next compaction runs.
 
 ### Limitations
 
@@ -197,4 +186,4 @@ The output of `promtool tsdb create-blocks-from rules` command is a directory th
 - All rules in the recording rule files will be evaluated.
 - If the `interval` is set in the recording rule file that will take priority over the `eval-interval` flag in the rule backfill command.
 - Alerts are currently ignored if they are in the recording rule file.
-- Rules in the same group cannot see the results of previous rules. Meaning that rules that refer to other rules being backfilled is not supported. A workaround is to backfill multiple times and create the dependent data first (and move dependent data to the Prometheus server data dir so that it is accessible from the Prometheus API).
+- Rules in the same group cannot see the results of previous rules. Meaning that rules that refer to other rules being backfilled is not supported. A workaround is to backfill mulitple times and create the dependent data first (and move dependent data to the Prometheus server data dir so that it is accessible from the Prometheus API).

@@ -20,8 +20,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/prometheus/pkg/labels"
 )
 
 func TestLazyLoader_WithSamplesTill(t *testing.T) {
@@ -48,7 +47,7 @@ func TestLazyLoader_WithSamplesTill(t *testing.T) {
 						{
 							Metric: labels.FromStrings("__name__", "metric1"),
 							Points: []Point{
-								{0, 1, nil}, {10000, 2, nil}, {20000, 3, nil}, {30000, 4, nil}, {40000, 5, nil},
+								{0, 1}, {10000, 2}, {20000, 3}, {30000, 4}, {40000, 5},
 							},
 						},
 					},
@@ -59,7 +58,7 @@ func TestLazyLoader_WithSamplesTill(t *testing.T) {
 						{
 							Metric: labels.FromStrings("__name__", "metric1"),
 							Points: []Point{
-								{0, 1, nil}, {10000, 2, nil}, {20000, 3, nil}, {30000, 4, nil}, {40000, 5, nil},
+								{0, 1}, {10000, 2}, {20000, 3}, {30000, 4}, {40000, 5},
 							},
 						},
 					},
@@ -70,7 +69,7 @@ func TestLazyLoader_WithSamplesTill(t *testing.T) {
 						{
 							Metric: labels.FromStrings("__name__", "metric1"),
 							Points: []Point{
-								{0, 1, nil}, {10000, 2, nil}, {20000, 3, nil}, {30000, 4, nil}, {40000, 5, nil}, {50000, 6, nil}, {60000, 7, nil},
+								{0, 1}, {10000, 2}, {20000, 3}, {30000, 4}, {40000, 5}, {50000, 6}, {60000, 7},
 							},
 						},
 					},
@@ -90,13 +89,13 @@ func TestLazyLoader_WithSamplesTill(t *testing.T) {
 						{
 							Metric: labels.FromStrings("__name__", "metric1"),
 							Points: []Point{
-								{0, 1, nil}, {10000, 1, nil}, {20000, 1, nil}, {30000, 1, nil}, {40000, 1, nil}, {50000, 1, nil},
+								{0, 1}, {10000, 1}, {20000, 1}, {30000, 1}, {40000, 1}, {50000, 1},
 							},
 						},
 						{
 							Metric: labels.FromStrings("__name__", "metric2"),
 							Points: []Point{
-								{0, 1, nil}, {10000, 2, nil}, {20000, 3, nil}, {30000, 4, nil}, {40000, 5, nil}, {50000, 6, nil}, {60000, 7, nil}, {70000, 8, nil},
+								{0, 1}, {10000, 2}, {20000, 3}, {30000, 4}, {40000, 5}, {50000, 6}, {60000, 7}, {70000, 8},
 							},
 						},
 					},
@@ -110,7 +109,7 @@ func TestLazyLoader_WithSamplesTill(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		suite, err := NewLazyLoader(t, c.loadString, LazyLoaderOpts{})
+		suite, err := NewLazyLoader(t, c.loadString)
 		require.NoError(t, err)
 		defer suite.Close()
 
@@ -144,7 +143,7 @@ func TestLazyLoader_WithSamplesTill(t *testing.T) {
 						Metric: storageSeries.Labels(),
 					}
 					it := storageSeries.Iterator()
-					for it.Next() == chunkenc.ValFloat {
+					for it.Next() {
 						t, v := it.At()
 						got.Points = append(got.Points, Point{T: t, V: v})
 					}

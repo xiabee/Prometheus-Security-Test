@@ -16,7 +16,7 @@ package testutil
 import (
 	"testing"
 
-	"github.com/go-kit/log"
+	"github.com/go-kit/kit/log"
 )
 
 type logger struct {

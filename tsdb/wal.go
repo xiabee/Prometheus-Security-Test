@@ -23,21 +23,21 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/prometheus/prometheus/storage"
-	"github.com/prometheus/prometheus/tsdb/chunks"
+	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/tsdb/encoding"
 	"github.com/prometheus/prometheus/tsdb/fileutil"
 	"github.com/prometheus/prometheus/tsdb/record"
 	"github.com/prometheus/prometheus/tsdb/tombstones"
-	"github.com/prometheus/prometheus/tsdb/wlog"
+	"github.com/prometheus/prometheus/tsdb/wal"
 )
 
 // WALEntryType indicates what data a WAL entry contains.
@@ -64,7 +64,7 @@ type walMetrics struct {
 	corruptions   prometheus.Counter
 }
 
-func newWalMetrics(r prometheus.Registerer) *walMetrics {
+func newWalMetrics(wal *SegmentWAL, r prometheus.Registerer) *walMetrics {
 	m := &walMetrics{}
 
 	m.fsyncDuration = prometheus.NewSummary(prometheus.SummaryOpts{
@@ -89,7 +89,7 @@ func newWalMetrics(r prometheus.Registerer) *walMetrics {
 // WAL is a write ahead log that can log new series labels and samples.
 // It must be completely read before new entries are logged.
 //
-// DEPRECATED: use wlog pkg combined with the record codex instead.
+// DEPRECATED: use wal pkg combined with the record codex instead.
 type WAL interface {
 	Reader() WALReader
 	LogSeries([]record.RefSeries) error
@@ -113,8 +113,8 @@ type WALReader interface {
 // the truncation threshold can be compacted.
 type segmentFile struct {
 	*os.File
-	maxTime   int64                // highest tombstone or sample timestamp in segment
-	minSeries chunks.HeadSeriesRef // lowerst series ID in segment
+	maxTime   int64  // highest tombstone or sample timestamp in segment
+	minSeries uint64 // lowerst series ID in segment
 }
 
 func newSegmentFile(f *os.File) *segmentFile {
@@ -146,7 +146,7 @@ func newCRC32() hash.Hash32 {
 
 // SegmentWAL is a write ahead log for series data.
 //
-// DEPRECATED: use wlog pkg combined with the record coders instead.
+// DEPRECATED: use wal pkg combined with the record coders instead.
 type SegmentWAL struct {
 	mtx     sync.Mutex
 	metrics *walMetrics
@@ -171,7 +171,7 @@ type SegmentWAL struct {
 // OpenSegmentWAL opens or creates a write ahead log in the given directory.
 // The WAL must be read completely before new data is written.
 func OpenSegmentWAL(dir string, logger log.Logger, flushInterval time.Duration, r prometheus.Registerer) (*SegmentWAL, error) {
-	if err := os.MkdirAll(dir, 0o777); err != nil {
+	if err := os.MkdirAll(dir, 0777); err != nil {
 		return nil, err
 	}
 	df, err := fileutil.OpenDir(dir)
@@ -188,11 +188,11 @@ func OpenSegmentWAL(dir string, logger log.Logger, flushInterval time.Duration, 
 		flushInterval: flushInterval,
 		donec:         make(chan struct{}),
 		stopc:         make(chan struct{}),
-		actorc:        make(chan func() error, 2),
+		actorc:        make(chan func() error, 1),
 		segmentSize:   walSegmentSizeBytes,
 		crc32:         newCRC32(),
 	}
-	w.metrics = newWalMetrics(r)
+	w.metrics = newWalMetrics(w, r)
 
 	fns, err := sequenceFiles(w.dirFile.Name())
 	if err != nil {
@@ -292,7 +292,7 @@ func (w *SegmentWAL) putBuffer(b *encoding.Encbuf) {
 
 // Truncate deletes the values prior to mint and the series which the keep function
 // does not indicate to preserve.
-func (w *SegmentWAL) Truncate(mint int64, keep func(chunks.HeadSeriesRef) bool) error {
+func (w *SegmentWAL) Truncate(mint int64, keep func(uint64) bool) error {
 	// The last segment is always active.
 	if len(w.files) < 2 {
 		return nil
@@ -505,7 +505,7 @@ func (w *SegmentWAL) LogDeletes(stones []tombstones.Stone) error {
 func (w *SegmentWAL) openSegmentFile(name string) (*os.File, error) {
 	// We must open all files in read/write mode as we may have to truncate along
 	// the way and any file may become the head.
-	f, err := os.OpenFile(name, os.O_RDWR, 0o666)
+	f, err := os.OpenFile(name, os.O_RDWR, 0666)
 	if err != nil {
 		return nil, err
 	}
@@ -787,8 +787,13 @@ const (
 
 func (w *SegmentWAL) encodeSeries(buf *encoding.Encbuf, series []record.RefSeries) uint8 {
 	for _, s := range series {
-		buf.PutBE64(uint64(s.Ref))
-		record.EncodeLabels(buf, s.Labels)
+		buf.PutBE64(s.Ref)
+		buf.PutUvarint(len(s.Labels))
+
+		for _, l := range s.Labels {
+			buf.PutUvarintStr(l.Name)
+			buf.PutUvarintStr(l.Value)
+		}
 	}
 	return walSeriesSimple
 }
@@ -803,7 +808,7 @@ func (w *SegmentWAL) encodeSamples(buf *encoding.Encbuf, samples []record.RefSam
 	// TODO(fabxc): optimize for all samples having the same timestamp.
 	first := samples[0]
 
-	buf.PutBE64(uint64(first.Ref))
+	buf.PutBE64(first.Ref)
 	buf.PutBE64int64(first.T)
 
 	for _, s := range samples {
@@ -817,7 +822,7 @@ func (w *SegmentWAL) encodeSamples(buf *encoding.Encbuf, samples []record.RefSam
 func (w *SegmentWAL) encodeDeletes(buf *encoding.Encbuf, stones []tombstones.Stone) uint8 {
 	for _, s := range stones {
 		for _, iv := range s.Intervals {
-			buf.PutBE64(uint64(s.Ref))
+			buf.PutBE64(s.Ref)
 			buf.PutVarint64(iv.Mint)
 			buf.PutVarint64(iv.Maxt)
 		}
@@ -833,7 +838,6 @@ type walReader struct {
 	cur   int
 	buf   []byte
 	crc32 hash.Hash32
-	dec   record.Decoder
 
 	curType    WALEntryType
 	curFlag    byte
@@ -1116,8 +1120,15 @@ func (r *walReader) decodeSeries(flag byte, b []byte, res *[]record.RefSeries) e
 	dec := encoding.Decbuf{B: b}
 
 	for len(dec.B) > 0 && dec.Err() == nil {
-		ref := chunks.HeadSeriesRef(dec.Be64())
-		lset := r.dec.DecodeLabels(&dec)
+		ref := dec.Be64()
+
+		lset := make(labels.Labels, dec.Uvarint())
+
+		for i := range lset {
+			lset[i].Name = dec.UvarintStr()
+			lset[i].Value = dec.UvarintStr()
+		}
+		sort.Sort(lset)
 
 		*res = append(*res, record.RefSeries{
 			Ref:    ref,
@@ -1150,7 +1161,7 @@ func (r *walReader) decodeSamples(flag byte, b []byte, res *[]record.RefSample) 
 		val := dec.Be64()
 
 		*res = append(*res, record.RefSample{
-			Ref: chunks.HeadSeriesRef(int64(baseRef) + dref),
+			Ref: uint64(int64(baseRef) + dref),
 			T:   baseTime + dtime,
 			V:   math.Float64frombits(val),
 		})
@@ -1170,7 +1181,7 @@ func (r *walReader) decodeDeletes(flag byte, b []byte, res *[]tombstones.Stone) 
 
 	for dec.Len() > 0 && dec.Err() == nil {
 		*res = append(*res, tombstones.Stone{
-			Ref: storage.SeriesRef(dec.Be64()),
+			Ref: dec.Be64(),
 			Intervals: tombstones.Intervals{
 				{Mint: dec.Varint64(), Maxt: dec.Varint64()},
 			},
@@ -1229,7 +1240,7 @@ func MigrateWAL(logger log.Logger, dir string) (err error) {
 	if err := os.RemoveAll(tmpdir); err != nil {
 		return errors.Wrap(err, "cleanup replacement dir")
 	}
-	repl, err := wlog.New(logger, nil, tmpdir, false)
+	repl, err := wal.New(logger, nil, tmpdir, false)
 	if err != nil {
 		return errors.Wrap(err, "open new WAL")
 	}

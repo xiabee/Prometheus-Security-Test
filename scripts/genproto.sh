@@ -15,7 +15,7 @@ if ! [[ $(protoc --version) =~ "3.15.8" ]]; then
 	exit 255
 fi
 
-# Since we run go install, go mod download, the go.sum will change.
+# Since we run go get, go mod download, the go.sum will change.
 # Make a backup.
 cp go.sum go.sum.bak
 
@@ -40,16 +40,14 @@ for dir in ${DIRS}; do
             -I="${PROM_PATH}" \
             -I="${GRPC_GATEWAY_ROOT}/third_party/googleapis" \
             ./*.proto
-		protoc --gogofast_out=Mgoogle/protobuf/timestamp.proto=github.com/gogo/protobuf/types,paths=source_relative:. -I=. \
-            -I="${GOGOPROTO_PATH}" \
-            ./io/prometheus/client/*.proto
+
 		sed -i.bak -E 's/import _ \"github.com\/gogo\/protobuf\/gogoproto\"//g' -- *.pb.go
 		sed -i.bak -E 's/import _ \"google\/protobuf\"//g' -- *.pb.go
 		sed -i.bak -E 's/\t_ \"google\/protobuf\"//g' -- *.pb.go
 		sed -i.bak -E 's/golang\/protobuf\/descriptor/gogo\/protobuf\/protoc-gen-gogo\/descriptor/g' -- *.go
 		sed -i.bak -E 's/golang\/protobuf/gogo\/protobuf/g' -- *.go
 		rm -f -- *.bak
-		goimports -w ./*.go ./io/prometheus/client/*.go
+		goimports -w ./*.go
 	popd
 done
 

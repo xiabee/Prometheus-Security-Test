@@ -15,17 +15,16 @@ package main
 
 import (
 	"context"
+	"io/ioutil"
 	"math"
+	"os"
 	"sort"
 	"testing"
-	"time"
 
-	"github.com/stretchr/testify/require"
-
-	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
-	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/stretchr/testify/require"
 )
 
 type backfillSample struct {
@@ -51,7 +50,7 @@ func queryAllSeries(t testing.TB, q storage.Querier, expectedMinTime, expectedMa
 		series := ss.At()
 		it := series.Iterator()
 		require.NoError(t, it.Err())
-		for it.Next() == chunkenc.ValFloat {
+		for it.Next() {
 			ts, v := it.At()
 			samples = append(samples, backfillSample{Timestamp: ts, Value: v, Labels: series.Labels()})
 		}
@@ -59,12 +58,12 @@ func queryAllSeries(t testing.TB, q storage.Querier, expectedMinTime, expectedMa
 	return samples
 }
 
-func testBlocks(t *testing.T, db *tsdb.DB, expectedMinTime, expectedMaxTime, expectedBlockDuration int64, expectedSamples []backfillSample, expectedNumBlocks int) {
+func testBlocks(t *testing.T, db *tsdb.DB, expectedMinTime, expectedMaxTime int64, expectedSamples []backfillSample, expectedNumBlocks int) {
 	blocks := db.Blocks()
-	require.Equal(t, expectedNumBlocks, len(blocks), "did not create correct number of blocks")
+	require.Equal(t, expectedNumBlocks, len(blocks))
 
-	for i, block := range blocks {
-		require.Equal(t, block.MinTime()/expectedBlockDuration, (block.MaxTime()-1)/expectedBlockDuration, "block %d contains data outside of one aligned block duration", i)
+	for _, block := range blocks {
+		require.Equal(t, true, block.MinTime()/tsdb.DefaultBlockDuration == (block.MaxTime()-1)/tsdb.DefaultBlockDuration)
 	}
 
 	q, err := db.Querier(context.Background(), math.MinInt64, math.MaxInt64)
@@ -76,11 +75,11 @@ func testBlocks(t *testing.T, db *tsdb.DB, expectedMinTime, expectedMaxTime, exp
 	allSamples := queryAllSeries(t, q, expectedMinTime, expectedMaxTime)
 	sortSamples(allSamples)
 	sortSamples(expectedSamples)
-	require.Equal(t, expectedSamples, allSamples, "did not create correct samples")
+	require.Equal(t, expectedSamples, allSamples)
 
 	if len(allSamples) > 0 {
-		require.Equal(t, expectedMinTime, allSamples[0].Timestamp, "timestamp of first sample is not the expected minimum time")
-		require.Equal(t, expectedMaxTime, allSamples[len(allSamples)-1].Timestamp, "timestamp of last sample is not the expected maximum time")
+		require.Equal(t, expectedMinTime, allSamples[0].Timestamp)
+		require.Equal(t, expectedMaxTime, allSamples[len(allSamples)-1].Timestamp)
 	}
 }
 
@@ -90,13 +89,11 @@ func TestBackfill(t *testing.T) {
 		IsOk                 bool
 		Description          string
 		MaxSamplesInAppender int
-		MaxBlockDuration     time.Duration
 		Expected             struct {
-			MinTime       int64
-			MaxTime       int64
-			NumBlocks     int
-			BlockDuration int64
-			Samples       []backfillSample
+			MinTime   int64
+			MaxTime   int64
+			NumBlocks int
+			Samples   []backfillSample
 		}
 	}{
 		{
@@ -105,17 +102,15 @@ func TestBackfill(t *testing.T) {
 			Description:          "Empty file.",
 			MaxSamplesInAppender: 5000,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       math.MaxInt64,
-				MaxTime:       math.MinInt64,
-				NumBlocks:     0,
-				BlockDuration: tsdb.DefaultBlockDuration,
-				Samples:       []backfillSample{},
+				MinTime:   math.MaxInt64,
+				MaxTime:   math.MinInt64,
+				NumBlocks: 0,
+				Samples:   []backfillSample{},
 			},
 		},
 		{
@@ -129,16 +124,14 @@ http_requests_total{code="400"} 1 1565133713.990
 			Description:          "Multiple samples with different timestamp for different series.",
 			MaxSamplesInAppender: 5000,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       1565133713989,
-				MaxTime:       1565133713990,
-				NumBlocks:     1,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   1565133713989,
+				MaxTime:   1565133713990,
+				NumBlocks: 1,
 				Samples: []backfillSample{
 					{
 						Timestamp: 1565133713989,
@@ -165,16 +158,14 @@ http_requests_total{code="200"} 1023 1565652113.989
 			Description:          "Multiple samples separated by 3 days.",
 			MaxSamplesInAppender: 5000,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       1565133713989,
-				MaxTime:       1565652113989,
-				NumBlocks:     3,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   1565133713989,
+				MaxTime:   1565652113989,
+				NumBlocks: 3,
 				Samples: []backfillSample{
 					{
 						Timestamp: 1565133713989,
@@ -205,16 +196,14 @@ http_requests_total{code="200"} 1021 1565133713.989
 			Description:          "Unordered samples from multiple series, which end in different blocks.",
 			MaxSamplesInAppender: 5000,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       1565133713989,
-				MaxTime:       1565392913989,
-				NumBlocks:     2,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   1565133713989,
+				MaxTime:   1565392913989,
+				NumBlocks: 2,
 				Samples: []backfillSample{
 					{
 						Timestamp: 1565133713989,
@@ -241,16 +230,14 @@ http_requests_total{code="400"} 2 1565133715.989
 			Description:          "Multiple samples with different timestamp for the same series.",
 			MaxSamplesInAppender: 5000,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       1565133713989,
-				MaxTime:       1565133715989,
-				NumBlocks:     1,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   1565133713989,
+				MaxTime:   1565133715989,
+				NumBlocks: 1,
 				Samples: []backfillSample{
 					{
 						Timestamp: 1565133713989,
@@ -273,132 +260,6 @@ http_requests_total{code="400"} 2 1565133715.989
 		{
 			ToParse: `# HELP http_requests_total The total number of HTTP requests.
 # TYPE http_requests_total counter
-http_requests_total{code="200"} 1021 1624463088.000
-http_requests_total{code="200"} 1 1627055153.000
-http_requests_total{code="400"} 2 1627056153.000
-# EOF
-`,
-			IsOk:                 true,
-			Description:          "Long maximum block duration puts all data into one block.",
-			MaxSamplesInAppender: 5000,
-			MaxBlockDuration:     2048 * time.Hour,
-			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
-			}{
-				MinTime:       1624463088000,
-				MaxTime:       1627056153000,
-				NumBlocks:     1,
-				BlockDuration: int64(1458 * time.Hour / time.Millisecond),
-				Samples: []backfillSample{
-					{
-						Timestamp: 1624463088000,
-						Value:     1021,
-						Labels:    labels.FromStrings("__name__", "http_requests_total", "code", "200"),
-					},
-					{
-						Timestamp: 1627055153000,
-						Value:     1,
-						Labels:    labels.FromStrings("__name__", "http_requests_total", "code", "200"),
-					},
-					{
-						Timestamp: 1627056153000,
-						Value:     2,
-						Labels:    labels.FromStrings("__name__", "http_requests_total", "code", "400"),
-					},
-				},
-			},
-		},
-		{
-			ToParse: `# HELP http_requests_total The total number of HTTP requests.
-# TYPE http_requests_total counter
-http_requests_total{code="200"} 1 1624463088.000
-http_requests_total{code="200"} 2 1629503088.000
-http_requests_total{code="200"} 3 1629863088.000
-# EOF
-`,
-			IsOk:                 true,
-			Description:          "Long maximum block duration puts all data into two blocks.",
-			MaxSamplesInAppender: 5000,
-			MaxBlockDuration:     2048 * time.Hour,
-			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
-			}{
-				MinTime:       1624463088000,
-				MaxTime:       1629863088000,
-				NumBlocks:     2,
-				BlockDuration: int64(1458 * time.Hour / time.Millisecond),
-				Samples: []backfillSample{
-					{
-						Timestamp: 1624463088000,
-						Value:     1,
-						Labels:    labels.FromStrings("__name__", "http_requests_total", "code", "200"),
-					},
-					{
-						Timestamp: 1629503088000,
-						Value:     2,
-						Labels:    labels.FromStrings("__name__", "http_requests_total", "code", "200"),
-					},
-					{
-						Timestamp: 1629863088000,
-						Value:     3,
-						Labels:    labels.FromStrings("__name__", "http_requests_total", "code", "200"),
-					},
-				},
-			},
-		},
-		{
-			ToParse: `# HELP http_requests_total The total number of HTTP requests.
-# TYPE http_requests_total counter
-http_requests_total{code="200"} 1 1624463088.000
-http_requests_total{code="200"} 2 1765943088.000
-http_requests_total{code="200"} 3 1768463088.000
-# EOF
-`,
-			IsOk:                 true,
-			Description:          "Maximum block duration longer than longest possible duration, uses largest duration, puts all data into two blocks.",
-			MaxSamplesInAppender: 5000,
-			MaxBlockDuration:     200000 * time.Hour,
-			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
-			}{
-				MinTime:       1624463088000,
-				MaxTime:       1768463088000,
-				NumBlocks:     2,
-				BlockDuration: int64(39366 * time.Hour / time.Millisecond),
-				Samples: []backfillSample{
-					{
-						Timestamp: 1624463088000,
-						Value:     1,
-						Labels:    labels.FromStrings("__name__", "http_requests_total", "code", "200"),
-					},
-					{
-						Timestamp: 1765943088000,
-						Value:     2,
-						Labels:    labels.FromStrings("__name__", "http_requests_total", "code", "200"),
-					},
-					{
-						Timestamp: 1768463088000,
-						Value:     3,
-						Labels:    labels.FromStrings("__name__", "http_requests_total", "code", "200"),
-					},
-				},
-			},
-		},
-		{
-			ToParse: `# HELP http_requests_total The total number of HTTP requests.
-# TYPE http_requests_total counter
 http_requests_total{code="200"} 1021 1565133713.989
 http_requests_total{code="200"} 1022 1565144513.989
 http_requests_total{code="400"} 2 1565155313.989
@@ -409,16 +270,14 @@ http_requests_total{code="400"} 1 1565166113.989
 			Description:          "Multiple samples that end up in different blocks.",
 			MaxSamplesInAppender: 5000,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       1565133713989,
-				MaxTime:       1565166113989,
-				NumBlocks:     4,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   1565133713989,
+				MaxTime:   1565166113989,
+				NumBlocks: 4,
 				Samples: []backfillSample{
 					{
 						Timestamp: 1565133713989,
@@ -459,16 +318,14 @@ http_requests_total{code="400"} 1 1565166113.989
 			Description:          "Number of samples are greater than the sample batch size.",
 			MaxSamplesInAppender: 2,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       1565133713989,
-				MaxTime:       1565166113989,
-				NumBlocks:     4,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   1565133713989,
+				MaxTime:   1565166113989,
+				NumBlocks: 4,
 				Samples: []backfillSample{
 					{
 						Timestamp: 1565133713989,
@@ -521,16 +378,14 @@ http_requests_total{code="400"} 1024 7199
 			Description:          "One series spanning 2h in same block should not cause problems to other series.",
 			MaxSamplesInAppender: 1,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       0,
-				MaxTime:       7199000,
-				NumBlocks:     1,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   0,
+				MaxTime:   7199000,
+				NumBlocks: 1,
 				Samples: []backfillSample{
 					{
 						Timestamp: 0,
@@ -563,16 +418,14 @@ http_requests_total{code="400"} 1024 7199
 			Description:          "Sample with no #HELP or #TYPE keyword.",
 			MaxSamplesInAppender: 5000,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       6900000,
-				MaxTime:       6900000,
-				NumBlocks:     1,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   6900000,
+				MaxTime:   6900000,
+				NumBlocks: 1,
 				Samples: []backfillSample{
 					{
 						Timestamp: 6900000,
@@ -589,16 +442,14 @@ http_requests_total{code="400"} 1024 7199
 			Description:          "Sample without newline after # EOF.",
 			MaxSamplesInAppender: 5000,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       6900000,
-				MaxTime:       6900000,
-				NumBlocks:     1,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   6900000,
+				MaxTime:   6900000,
+				NumBlocks: 1,
 				Samples: []backfillSample{
 					{
 						Timestamp: 6900000,
@@ -616,16 +467,14 @@ http_requests_total{code="400"} 1024 7199
 			Description:          "Bare sample.",
 			MaxSamplesInAppender: 5000,
 			Expected: struct {
-				MinTime       int64
-				MaxTime       int64
-				NumBlocks     int
-				BlockDuration int64
-				Samples       []backfillSample
+				MinTime   int64
+				MaxTime   int64
+				NumBlocks int
+				Samples   []backfillSample
 			}{
-				MinTime:       1001000,
-				MaxTime:       1001000,
-				NumBlocks:     1,
-				BlockDuration: tsdb.DefaultBlockDuration,
+				MinTime:   1001000,
+				MaxTime:   1001000,
+				NumBlocks: 1,
 				Samples: []backfillSample{
 					{
 						Timestamp: 1001000,
@@ -683,28 +532,28 @@ after_eof 1 2
 		},
 	}
 	for _, test := range tests {
-		t.Run(test.Description, func(t *testing.T) {
-			t.Logf("Test:%s", test.Description)
+		t.Logf("Test:%s", test.Description)
 
-			outputDir := t.TempDir()
+		outputDir, err := ioutil.TempDir("", "myDir")
+		require.NoError(t, err)
+		defer func() {
+			require.NoError(t, os.RemoveAll(outputDir))
+		}()
 
-			err := backfill(test.MaxSamplesInAppender, []byte(test.ToParse), outputDir, false, false, test.MaxBlockDuration)
+		err = backfill(test.MaxSamplesInAppender, []byte(test.ToParse), outputDir, false)
 
-			if !test.IsOk {
-				require.Error(t, err, test.Description)
-				return
-			}
+		if !test.IsOk {
+			require.Error(t, err, test.Description)
+			continue
+		}
 
-			require.NoError(t, err)
-			options := tsdb.DefaultOptions()
-			options.RetentionDuration = int64(10 * 365 * 24 * time.Hour / time.Millisecond) // maximum duration tests require a long retention
-			db, err := tsdb.Open(outputDir, nil, nil, options, nil)
-			require.NoError(t, err)
-			defer func() {
-				require.NoError(t, db.Close())
-			}()
+		require.NoError(t, err)
+		db, err := tsdb.Open(outputDir, nil, nil, tsdb.DefaultOptions())
+		require.NoError(t, err)
+		defer func() {
+			require.NoError(t, db.Close())
+		}()
 
-			testBlocks(t, db, test.Expected.MinTime, test.Expected.MaxTime, test.Expected.BlockDuration, test.Expected.Samples, test.Expected.NumBlocks)
-		})
+		testBlocks(t, db, test.Expected.MinTime, test.Expected.MaxTime, test.Expected.Samples, test.Expected.NumBlocks)
 	}
 }

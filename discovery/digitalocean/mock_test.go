@@ -75,8 +75,7 @@ func (m *SDMock) HandleDropletsList() {
 				panic(err)
 			}
 		}
-		fmt.Fprint(w, []string{
-			`
+		fmt.Fprint(w, []string{`
 {
   "droplets": [
     {

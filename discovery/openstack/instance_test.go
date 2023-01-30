@@ -51,6 +51,7 @@ func (s *OpenstackSDInstanceTestSuite) openstackAuthSuccess() (refresher, error)
 }
 
 func TestOpenstackSDInstanceRefresh(t *testing.T) {
+
 	mock := &OpenstackSDInstanceTestSuite{}
 	mock.SetupTest(t)
 

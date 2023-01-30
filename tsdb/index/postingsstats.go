@@ -59,6 +59,7 @@ func (m *maxHeap) push(item Stat) {
 			m.minIndex = i
 		}
 	}
+
 }
 
 func (m *maxHeap) get() []Stat {

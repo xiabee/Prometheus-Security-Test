@@ -14,84 +14,63 @@
 # Needs to be defined before including Makefile.common to auto-generate targets
 DOCKER_ARCHS ?= amd64 armv7 arm64 ppc64le s390x
 
-UI_PATH = web/ui
-UI_NODE_MODULES_PATH = $(UI_PATH)/node_modules
+REACT_APP_PATH = web/ui/react-app
+REACT_APP_SOURCE_FILES = $(shell find $(REACT_APP_PATH)/public/ $(REACT_APP_PATH)/src/ $(REACT_APP_PATH)/tsconfig.json)
+REACT_APP_OUTPUT_DIR = web/ui/static/react
+REACT_APP_NODE_MODULES_PATH = $(REACT_APP_PATH)/node_modules
 REACT_APP_NPM_LICENSES_TARBALL = "npm_licenses.tar.bz2"
+REACT_APP_BUILD_SCRIPT = ./scripts/build_react_app.sh
 
 PROMTOOL = ./promtool
 TSDB_BENCHMARK_NUM_METRICS ?= 1000
 TSDB_BENCHMARK_DATASET ?= ./tsdb/testdata/20kseries.json
 TSDB_BENCHMARK_OUTPUT_DIR ?= ./benchout
 
-GOLANGCI_LINT_OPTS ?= --timeout 4m
+GOLANGCI_LINT_OPTS ?= --timeout 2m
 
 include Makefile.common
 
 DOCKER_IMAGE_NAME       ?= prometheus
 
-.PHONY: update-npm-deps
-update-npm-deps:
-	@echo ">> updating npm dependencies"
-	./scripts/npm-deps.sh "minor"
+$(REACT_APP_NODE_MODULES_PATH): $(REACT_APP_PATH)/package.json $(REACT_APP_PATH)/yarn.lock
+	cd $(REACT_APP_PATH) && yarn --frozen-lockfile
 
-.PHONY: upgrade-npm-deps
-upgrade-npm-deps:
-	@echo ">> upgrading npm dependencies"
-	./scripts/npm-deps.sh "latest"
-
-.PHONY: ui-bump-version
-ui-bump-version:
-	version=$$(sed s/2/0/ < VERSION) && ./scripts/ui_release.sh --bump-version "$${version}"
-	cd web/ui && npm install
-	git add "./web/ui/package-lock.json" "./**/package.json"
-
-.PHONY: ui-install
-ui-install:
-	cd $(UI_PATH) && npm install
-
-.PHONY: ui-build
-ui-build:
-	cd $(UI_PATH) && CI="" npm run build
-
-.PHONY: ui-build-module
-ui-build-module:
-	cd $(UI_PATH) && npm run build:module
-
-.PHONY: ui-test
-ui-test:
-	cd $(UI_PATH) && CI=true npm run test
-
-.PHONY: ui-lint
-ui-lint:
-	cd $(UI_PATH) && npm run lint
+$(REACT_APP_OUTPUT_DIR): $(REACT_APP_NODE_MODULES_PATH) $(REACT_APP_SOURCE_FILES) $(REACT_APP_BUILD_SCRIPT)
+	@echo ">> building React app"
+	@$(REACT_APP_BUILD_SCRIPT)
 
 .PHONY: assets
-assets: ui-install ui-build
+assets: $(REACT_APP_OUTPUT_DIR)
+	@echo ">> writing assets"
+	# Un-setting GOOS and GOARCH here because the generated Go code is always the same,
+	# but the cached object code is incompatible between architectures and OSes (which
+	# breaks cross-building for different combinations on CI in the same container).
+	cd web/ui && GO111MODULE=$(GO111MODULE) GOOS= GOARCH= $(GO) generate -x -v $(GOOPTS)
+	@$(GOFMT) -w ./web/ui
 
-.PHONY: assets-compress
-assets-compress: assets
-	@echo '>> compressing assets'
-	scripts/compress_assets.sh
+.PHONY: react-app-lint
+react-app-lint:
+	@echo ">> running React app linting"
+	cd $(REACT_APP_PATH) && yarn lint:ci
 
-.PHONY: assets-tarball
-assets-tarball: assets
-	@echo '>> packaging assets'
-	scripts/package_assets.sh
+.PHONY: react-app-lint-fix
+react-app-lint-fix:
+	@echo ">> running React app linting and fixing errors where possible"
+	cd $(REACT_APP_PATH) && yarn lint
+
+.PHONY: react-app-test
+react-app-test: | $(REACT_APP_NODE_MODULES_PATH) react-app-lint
+	@echo ">> running React app tests"
+	cd $(REACT_APP_PATH) && yarn test --no-watch --coverage
 
 .PHONY: test
-# If we only want to only test go code we have to change the test target
-# which is called by all.
-ifeq ($(GO_ONLY),1)
-test: common-test
-else
-test: common-test ui-build-module ui-test ui-lint
-endif
+test: common-test react-app-test
 
 .PHONY: npm_licenses
-npm_licenses: ui-install
+npm_licenses: $(REACT_APP_NODE_MODULES_PATH)
 	@echo ">> bundling npm licenses"
 	rm -f $(REACT_APP_NPM_LICENSES_TARBALL)
-	find $(UI_NODE_MODULES_PATH) -iname "license*" | tar cfj $(REACT_APP_NPM_LICENSES_TARBALL) --transform 's/^/npm_licenses\//' --files-from=-
+	find $(REACT_APP_NODE_MODULES_PATH) -iname "license*" | tar cfj $(REACT_APP_NPM_LICENSES_TARBALL) --transform 's/^/npm_licenses\//' --files-from=-
 
 .PHONY: tarball
 tarball: npm_licenses common-tarball
@@ -99,15 +78,8 @@ tarball: npm_licenses common-tarball
 .PHONY: docker
 docker: npm_licenses common-docker
 
-plugins/plugins.go: plugins.yml plugins/generate.go
-	@echo ">> creating plugins list"
-	$(GO) generate -tags plugins ./plugins
-
-.PHONY: plugins
-plugins: plugins/plugins.go
-
 .PHONY: build
-build: assets npm_licenses assets-compress common-build plugins
+build: assets common-build
 
 .PHONY: bench_tsdb
 bench_tsdb: $(PROMU)

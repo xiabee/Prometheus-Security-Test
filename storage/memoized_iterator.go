@@ -16,7 +16,6 @@ package storage
 import (
 	"math"
 
-	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 )
 
@@ -25,18 +24,12 @@ type MemoizedSeriesIterator struct {
 	it    chunkenc.Iterator
 	delta int64
 
-	lastTime  int64
-	valueType chunkenc.ValueType
+	lastTime int64
+	ok       bool
 
 	// Keep track of the previously returned value.
-	prevTime           int64
-	prevValue          float64
-	prevHistogram      *histogram.Histogram
-	prevFloatHistogram *histogram.FloatHistogram
-	// TODO(beorn7): MemoizedSeriesIterator is currently only used by the
-	// PromQL engine, which only works with FloatHistograms. For better
-	// performance, we could change MemoizedSeriesIterator to also only
-	// handle FloatHistograms.
+	prevTime  int64
+	prevValue float64
 }
 
 // NewMemoizedEmptyIterator is like NewMemoizedIterator but it's initialised with an empty iterator.
@@ -60,91 +53,68 @@ func NewMemoizedIterator(it chunkenc.Iterator, delta int64) *MemoizedSeriesItera
 func (b *MemoizedSeriesIterator) Reset(it chunkenc.Iterator) {
 	b.it = it
 	b.lastTime = math.MinInt64
+	b.ok = true
 	b.prevTime = math.MinInt64
-	b.valueType = it.Next()
+	it.Next()
 }
 
 // PeekPrev returns the previous element of the iterator. If there is none buffered,
 // ok is false.
-func (b *MemoizedSeriesIterator) PeekPrev() (t int64, v float64, h *histogram.Histogram, fh *histogram.FloatHistogram, ok bool) {
+func (b *MemoizedSeriesIterator) PeekPrev() (t int64, v float64, ok bool) {
 	if b.prevTime == math.MinInt64 {
-		return 0, 0, nil, nil, false
+		return 0, 0, false
 	}
-	return b.prevTime, b.prevValue, b.prevHistogram, b.prevFloatHistogram, true
+	return b.prevTime, b.prevValue, true
 }
 
 // Seek advances the iterator to the element at time t or greater.
-func (b *MemoizedSeriesIterator) Seek(t int64) chunkenc.ValueType {
+func (b *MemoizedSeriesIterator) Seek(t int64) bool {
 	t0 := t - b.delta
 
-	if b.valueType != chunkenc.ValNone && t0 > b.lastTime {
+	if t0 > b.lastTime {
 		// Reset the previously stored element because the seek advanced
 		// more than the delta.
 		b.prevTime = math.MinInt64
 
-		b.valueType = b.it.Seek(t0)
-		if b.valueType == chunkenc.ValNone {
-			return chunkenc.ValNone
+		b.ok = b.it.Seek(t0)
+		if !b.ok {
+			return false
 		}
-		b.lastTime = b.it.AtT()
+		b.lastTime, _ = b.it.At()
 	}
+
 	if b.lastTime >= t {
-		return b.valueType
+		return true
 	}
-	for b.Next() != chunkenc.ValNone {
+	for b.Next() {
 		if b.lastTime >= t {
-			return b.valueType
+			return true
 		}
 	}
 
-	return chunkenc.ValNone
+	return false
 }
 
 // Next advances the iterator to the next element.
-func (b *MemoizedSeriesIterator) Next() chunkenc.ValueType {
+func (b *MemoizedSeriesIterator) Next() bool {
+	if !b.ok {
+		return false
+	}
+
 	// Keep track of the previous element.
-	switch b.valueType {
-	case chunkenc.ValNone:
-		return chunkenc.ValNone
-	case chunkenc.ValFloat:
-		b.prevTime, b.prevValue = b.it.At()
-		b.prevHistogram = nil
-		b.prevFloatHistogram = nil
-	case chunkenc.ValHistogram:
-		b.prevValue = 0
-		b.prevTime, b.prevHistogram = b.it.AtHistogram()
-		_, b.prevFloatHistogram = b.it.AtFloatHistogram()
-	case chunkenc.ValFloatHistogram:
-		b.prevValue = 0
-		b.prevHistogram = nil
-		b.prevTime, b.prevFloatHistogram = b.it.AtFloatHistogram()
+	b.prevTime, b.prevValue = b.it.At()
+
+	b.ok = b.it.Next()
+	if b.ok {
+		b.lastTime, _ = b.it.At()
 	}
 
-	b.valueType = b.it.Next()
-	if b.valueType != chunkenc.ValNone {
-		b.lastTime = b.it.AtT()
-	}
-	return b.valueType
+	return b.ok
 }
 
-// At returns the current float element of the iterator.
-func (b *MemoizedSeriesIterator) At() (int64, float64) {
+// Values returns the current element of the iterator.
+func (b *MemoizedSeriesIterator) Values() (int64, float64) {
 	return b.it.At()
-}
-
-// AtHistogram returns the current histogram element of the iterator.
-func (b *MemoizedSeriesIterator) AtHistogram() (int64, *histogram.Histogram) {
-	return b.it.AtHistogram()
-}
-
-// AtFloatHistogram returns the current float-histogram element of the iterator.
-func (b *MemoizedSeriesIterator) AtFloatHistogram() (int64, *histogram.FloatHistogram) {
-	return b.it.AtFloatHistogram()
-}
-
-// AtT returns the current timestamp of the iterator.
-func (b *MemoizedSeriesIterator) AtT() int64 {
-	return b.it.AtT()
 }
 
 // Err returns the last encountered error.

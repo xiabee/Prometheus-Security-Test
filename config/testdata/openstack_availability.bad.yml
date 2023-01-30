@@ -1,3 +1,4 @@
 scrape_configs:
-  - openstack_sd_configs:
-      - availability: invalid
+- openstack_sd_configs:
+  - availability: invalid
+

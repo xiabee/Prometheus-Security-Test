@@ -17,7 +17,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,8 +31,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/prometheus/prometheus/util/testutil"
 )
 
 type origin int
@@ -235,10 +233,10 @@ func (p *queryLogTest) run(t *testing.T) {
 	p.skip(t)
 
 	// Setup temporary files for this test.
-	queryLogFile, err := os.CreateTemp("", "query")
+	queryLogFile, err := ioutil.TempFile("", "query")
 	require.NoError(t, err)
 	defer os.Remove(queryLogFile.Name())
-	p.configFile, err = os.CreateTemp("", "config")
+	p.configFile, err = ioutil.TempFile("", "config")
 	require.NoError(t, err)
 	defer os.Remove(p.configFile.Name())
 
@@ -248,7 +246,11 @@ func (p *queryLogTest) run(t *testing.T) {
 		p.setQueryLog(t, "")
 	}
 
-	dir := t.TempDir()
+	dir, err := ioutil.TempDir("", "query_log_test")
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, os.RemoveAll(dir))
+	}()
 
 	params := append([]string{
 		"-test.main",
@@ -269,7 +271,7 @@ func (p *queryLogTest) run(t *testing.T) {
 	wg.Add(1)
 	defer wg.Wait()
 	go func() {
-		slurp, _ := io.ReadAll(stderr)
+		slurp, _ := ioutil.ReadAll(stderr)
 		t.Log(string(slurp))
 		wg.Done()
 	}()
@@ -333,7 +335,7 @@ func (p *queryLogTest) run(t *testing.T) {
 		return
 	}
 	// Move the file, Prometheus should still write to the old file.
-	newFile, err := os.CreateTemp("", "newLoc")
+	newFile, err := ioutil.TempFile("", "newLoc")
 	require.NoError(t, err)
 	require.NoError(t, newFile.Close())
 	defer os.Remove(newFile.Name())
@@ -410,6 +412,7 @@ func TestQueryLog(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 
+	port := 15000
 	for _, host := range []string{"127.0.0.1", "[::1]"} {
 		for _, prefix := range []string{"", "/foobar"} {
 			for _, enabledAtStart := range []bool{true, false} {
@@ -419,7 +422,7 @@ func TestQueryLog(t *testing.T) {
 						host:           host,
 						enabledAtStart: enabledAtStart,
 						prefix:         prefix,
-						port:           testutil.RandomUnprivilegedPort(t),
+						port:           port,
 						cwd:            cwd,
 					}
 

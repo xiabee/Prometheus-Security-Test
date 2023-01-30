@@ -2,7 +2,7 @@ import React from 'react';
 
 const PathPrefixContext = React.createContext('');
 
-function usePathPrefix(): string {
+function usePathPrefix() {
   return React.useContext(PathPrefixContext);
 }
 

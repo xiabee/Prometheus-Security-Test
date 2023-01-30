@@ -15,10 +15,8 @@ package httputil
 
 import (
 	"net/http"
+	"regexp"
 	"testing"
-
-	"github.com/grafana/regexp"
-	"github.com/stretchr/testify/require"
 )
 
 func getCORSHandlerFunc() http.Handler {
@@ -42,24 +40,41 @@ func TestCORSHandler(t *testing.T) {
 
 	// OPTIONS with legit origin
 	req, err := http.NewRequest("OPTIONS", server.URL+"/any_path", nil)
-	require.NoError(t, err, "could not create request")
+
+	if err != nil {
+		t.Error("could not create request")
+	}
 
 	req.Header.Set("Origin", dummyOrigin)
 	resp, err := client.Do(req)
-	require.NoError(t, err, "client get failed with unexpected error")
+
+	if err != nil {
+		t.Error("client get failed with unexpected error")
+	}
 
 	AccessControlAllowOrigin := resp.Header.Get("Access-Control-Allow-Origin")
 
-	require.Equal(t, dummyOrigin, AccessControlAllowOrigin, "expected Access-Control-Allow-Origin header")
+	if AccessControlAllowOrigin != dummyOrigin {
+		t.Fatalf("%q does not match %q", dummyOrigin, AccessControlAllowOrigin)
+	}
 
 	// OPTIONS with bad origin
 	req, err = http.NewRequest("OPTIONS", server.URL+"/any_path", nil)
-	require.NoError(t, err, "could not create request")
+
+	if err != nil {
+		t.Error("could not create request")
+	}
 
 	req.Header.Set("Origin", "https://not-foo.com")
 	resp, err = client.Do(req)
-	require.NoError(t, err, "client get failed with unexpected error")
+
+	if err != nil {
+		t.Error("client get failed with unexpected error")
+	}
 
 	AccessControlAllowOrigin = resp.Header.Get("Access-Control-Allow-Origin")
-	require.Empty(t, AccessControlAllowOrigin, "Access-Control-Allow-Origin header should not exist but it was set")
+
+	if AccessControlAllowOrigin != "" {
+		t.Fatalf("Access-Control-Allow-Origin should not exist but it was set to: %q", AccessControlAllowOrigin)
+	}
 }

@@ -3,7 +3,8 @@ import { mount, ReactWrapper } from 'enzyme';
 import { act } from 'react-dom/test-utils';
 import { Alert } from 'reactstrap';
 import { sampleApiResponse } from './__testdata__/testdata';
-import ScrapePoolList, { ScrapePoolPanel } from './ScrapePoolList';
+import ScrapePoolList from './ScrapePoolList';
+import ScrapePoolPanel from './ScrapePoolPanel';
 import { Target } from './target';
 import { FetchMock } from 'jest-fetch-mock/types';
 import { PathPrefixContext } from '../../contexts/PathPrefixContext';
@@ -24,9 +25,6 @@ describe('ScrapePoolList', () => {
           const div = document.createElement('div');
           div.id = `series-labels-${pool}-${idx}`;
           document.body.appendChild(div);
-          const div2 = document.createElement('div');
-          div2.id = `scrape-duration-${pool}-${idx}`;
-          document.body.appendChild(div2);
         });
       });
       mock = fetchMock.mockResponse(JSON.stringify(sampleApiResponse));
@@ -47,9 +45,9 @@ describe('ScrapePoolList', () => {
       });
       const panels = scrapePoolList.find(ScrapePoolPanel);
       expect(panels).toHaveLength(3);
-      const activeTargets: Target[] = sampleApiResponse.data.activeTargets as unknown as Target[];
+      const activeTargets: Target[] = sampleApiResponse.data.activeTargets as Target[];
       activeTargets.forEach(({ scrapePool }: Target) => {
-        const panel = scrapePoolList.find(ScrapePoolPanel).filterWhere((panel) => panel.prop('scrapePool') === scrapePool);
+        const panel = scrapePoolList.find(ScrapePoolPanel).filterWhere(panel => panel.prop('scrapePool') === scrapePool);
         expect(panel).toHaveLength(1);
       });
     });

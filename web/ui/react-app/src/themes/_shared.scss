@@ -7,7 +7,7 @@
       Example:
 
       $foo = '#000';
-
+ 
    2. Add a style rule in _shared.scss (this file) that uses new variable.
       Example:
 
@@ -58,7 +58,7 @@
 .metrics-explorer .metric:hover {
   background: $metrics-explorer-bg;
 }
-button.expression-input-action-btn {
+button.metrics-explorer-btn {
   color: $input-group-addon-color;
   background-color: $input-group-addon-bg;
   border: $input-border-width solid $input-group-addon-border-color;
@@ -104,17 +104,8 @@ button.execute-btn {
   margin-bottom: 20px;
 }
 
-.navbar-brand img {
-  padding-right: 1rem;
-  height: 1.9rem;
-}
-
-.navbar-brand {
-  margin-top: 4px;
-}
-
 input[type='checkbox']:checked + label {
-  color: $checked-checkbox-color;
+  color: #286090;
 }
 
 .custom-control-label {
@@ -144,9 +135,8 @@ input[type='checkbox']:checked + label {
   flex-wrap: nowrap;
 }
 
-.alert {
-  padding: 10px;
-  margin-bottom: .2rem;
+.alert.alert-danger {
+  margin-bottom: 10px;
 }
 
 .nav-tabs .nav-link {
@@ -232,16 +222,8 @@ input[type='checkbox']:checked + label {
   margin-left: 20px;
 }
 
-.graph-selected-exemplar {
-  position: relative;
-  border: 1px solid $nav-tabs-border-color;
-  margin: 15px 55px;
-  font-size: 0.75em;
-  padding: 10px 10px;
-}
-
 .graph-legend {
-  margin: 15px 55px;
+  margin: 15px 0 15px 55px;
   font-size: 0.75em;
   padding: 10px 5px;
   display: inline-block;
@@ -273,14 +255,6 @@ input[type='checkbox']:checked + label {
 
 .legend-metric-name {
   margin-right: 1px;
-}
-
-.legend-label-container:hover {
-  background-color: #add6ff;
-  border-radius: 3px;
-  padding-bottom: 1px;
-  color: #495057;
-  cursor: pointer;
 }
 
 .legend-label-name {
@@ -338,7 +312,6 @@ input[type='checkbox']:checked + label {
   display: flex;
   justify-content: space-between;
   margin-bottom: 10px;
-  margin-top: 10px;
   padding: 10px;
 }
 

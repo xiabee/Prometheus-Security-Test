@@ -15,15 +15,15 @@ package openstack
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
-	"github.com/go-kit/log"
+	"github.com/go-kit/kit/log"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
-	"github.com/mwitkow/go-conntrack"
+	conntrack "github.com/mwitkow/go-conntrack"
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
 
@@ -100,7 +100,7 @@ func (c *Role) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	case OpenStackRoleHypervisor, OpenStackRoleInstance:
 		return nil
 	default:
-		return fmt.Errorf("unknown OpenStack SD role %q", *c)
+		return errors.Errorf("unknown OpenStack SD role %q", *c)
 	}
 }
 
@@ -145,6 +145,7 @@ func NewDiscovery(conf *SDConfig, l log.Logger) (*refresh.Discovery, error) {
 		time.Duration(conf.RefreshInterval),
 		r.refresh,
 	), nil
+
 }
 
 func newRefresher(conf *SDConfig, l log.Logger) (refresher, error) {

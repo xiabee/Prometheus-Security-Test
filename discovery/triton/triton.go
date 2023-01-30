@@ -16,16 +16,17 @@ package triton
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/mwitkow/go-conntrack"
+	"github.com/go-kit/kit/log"
+	conntrack "github.com/mwitkow/go-conntrack"
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
 
@@ -187,9 +188,9 @@ func (d *Discovery) refresh(ctx context.Context) ([]*targetgroup.Group, error) {
 	case "cn":
 		endpointFormat = "https://%s:%d/v%d/gz/discover"
 	default:
-		return nil, fmt.Errorf("unknown role '%s' in configuration", d.sdConfig.Role)
+		return nil, errors.New(fmt.Sprintf("unknown role '%s' in configuration", d.sdConfig.Role))
 	}
-	endpoint := fmt.Sprintf(endpointFormat, d.sdConfig.Endpoint, d.sdConfig.Port, d.sdConfig.Version)
+	var endpoint = fmt.Sprintf(endpointFormat, d.sdConfig.Endpoint, d.sdConfig.Port, d.sdConfig.Version)
 	if len(d.sdConfig.Groups) > 0 {
 		groups := url.QueryEscape(strings.Join(d.sdConfig.Groups, ","))
 		endpoint = fmt.Sprintf("%s?groups=%s", endpoint, groups)
@@ -202,17 +203,17 @@ func (d *Discovery) refresh(ctx context.Context) ([]*targetgroup.Group, error) {
 	req = req.WithContext(ctx)
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("an error occurred when requesting targets from the discovery endpoint: %w", err)
+		return nil, errors.Wrap(err, "an error occurred when requesting targets from the discovery endpoint")
 	}
 
 	defer func() {
-		io.Copy(io.Discard, resp.Body)
+		io.Copy(ioutil.Discard, resp.Body)
 		resp.Body.Close()
 	}()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("an error occurred when reading the response body: %w", err)
+		return nil, errors.Wrap(err, "an error occurred when reading the response body")
 	}
 
 	// The JSON response body is different so it needs to be processed/mapped separately.
@@ -222,7 +223,7 @@ func (d *Discovery) refresh(ctx context.Context) ([]*targetgroup.Group, error) {
 	case "cn":
 		return d.processComputeNodeResponse(data, endpoint)
 	default:
-		return nil, fmt.Errorf("unknown role '%s' in configuration", d.sdConfig.Role)
+		return nil, errors.New(fmt.Sprintf("unknown role '%s' in configuration", d.sdConfig.Role))
 	}
 }
 
@@ -234,7 +235,7 @@ func (d *Discovery) processContainerResponse(data []byte, endpoint string) ([]*t
 	dr := DiscoveryResponse{}
 	err := json.Unmarshal(data, &dr)
 	if err != nil {
-		return nil, fmt.Errorf("an error occurred unmarshaling the discovery response json: %w", err)
+		return nil, errors.Wrap(err, "an error occurred unmarshaling the discovery response json")
 	}
 
 	for _, container := range dr.Containers {
@@ -267,7 +268,7 @@ func (d *Discovery) processComputeNodeResponse(data []byte, endpoint string) ([]
 	dr := ComputeNodeDiscoveryResponse{}
 	err := json.Unmarshal(data, &dr)
 	if err != nil {
-		return nil, fmt.Errorf("an error occurred unmarshaling the compute node discovery response json: %w", err)
+		return nil, errors.Wrap(err, "an error occurred unmarshaling the compute node discovery response json")
 	}
 
 	for _, cn := range dr.ComputeNodes {

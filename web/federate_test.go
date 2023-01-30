@@ -28,7 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/prometheus/prometheus/config"
-	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
@@ -115,14 +115,6 @@ test_metric1{foo="boo",instance="i"} 1 6000000
 test_metric2{foo="boo",instance="i"} 1 6000000
 `,
 	},
-	"two matchers with overlap": {
-		params: "match[]={__name__=~'test_metric1'}&match[]={foo='bar'}",
-		code:   200,
-		body: `# TYPE test_metric1 untyped
-test_metric1{foo="bar",instance="i"} 10000 6000000
-test_metric1{foo="boo",instance="i"} 1 6000000
-`,
-	},
 	"everything": {
 		params: "match[]={__name__=~'.%2b'}", // '%2b' is an URL-encoded '+'.
 		code:   200,
@@ -162,7 +154,7 @@ test_metric_without_labels{instance=""} 1001 6000000
 	},
 	"external labels are added if not already present": {
 		params:         "match[]={__name__=~'.%2b'}", // '%2b' is an URL-encoded '+'.
-		externalLabels: labels.Labels{{Name: "foo", Value: "baz"}, {Name: "zone", Value: "ie"}},
+		externalLabels: labels.Labels{{Name: "zone", Value: "ie"}, {Name: "foo", Value: "baz"}},
 		code:           200,
 		body: `# TYPE test_metric1 untyped
 test_metric1{foo="bar",instance="i",zone="ie"} 10000 6000000
@@ -253,19 +245,18 @@ func (notReadyReadStorage) Stats(string) (*tsdb.Stats, error) {
 
 // Regression test for https://github.com/prometheus/prometheus/issues/7181.
 func TestFederation_NotReady(t *testing.T) {
+	h := &Handler{
+		localStorage:  notReadyReadStorage{},
+		lookbackDelta: 5 * time.Minute,
+		now:           func() model.Time { return 101 * 60 * 1000 }, // 101min after epoch.
+		config: &config.Config{
+			GlobalConfig: config.GlobalConfig{},
+		},
+	}
+
 	for name, scenario := range scenarios {
 		t.Run(name, func(t *testing.T) {
-			h := &Handler{
-				localStorage:  notReadyReadStorage{},
-				lookbackDelta: 5 * time.Minute,
-				now:           func() model.Time { return 101 * 60 * 1000 }, // 101min after epoch.
-				config: &config.Config{
-					GlobalConfig: config.GlobalConfig{
-						ExternalLabels: scenario.externalLabels,
-					},
-				},
-			}
-
+			h.config.GlobalConfig.ExternalLabels = scenario.externalLabels
 			req := httptest.NewRequest("GET", "http://example.org/federate?"+scenario.params, nil)
 			res := httptest.NewRecorder()
 

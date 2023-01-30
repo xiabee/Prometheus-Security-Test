@@ -37,7 +37,7 @@ exports[`targetLabels renders discovered labels 1`] = `
   <Tooltip
     autohide={true}
     isOpen={false}
-    placement="right-end"
+    placement="top"
     placementPrefix="bs-tooltip"
     style={
       Object {

@@ -43,7 +43,5 @@ func NewRoundTripCheckRequest(checkRequest func(*http.Request), theResponse *htt
 		checkRequest: checkRequest,
 		roundTrip: roundTrip{
 			theResponse: theResponse,
-			theError:    theError,
-		},
-	}
+			theError:    theError}}
 }

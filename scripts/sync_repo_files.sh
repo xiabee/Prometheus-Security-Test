@@ -15,19 +15,14 @@ orgs="prometheus prometheus-community"
 
 color_red='\e[31m'
 color_green='\e[32m'
-color_yellow='\e[33m'
 color_none='\e[0m'
 
 echo_red() {
-  echo -e "${color_red}$@${color_none}" 1>&2
+  echo -e "${color_red}$@${color_none}"
 }
 
 echo_green() {
-  echo -e "${color_green}$@${color_none}" 1>&2
-}
-
-echo_yellow() {
-  echo -e "${color_yellow}$@${color_none}" 1>&2
+  echo -e "${color_green}$@${color_none}"
 }
 
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
@@ -37,7 +32,7 @@ if [ -z "${GITHUB_TOKEN}" ]; then
 fi
 
 # List of files that should be synced.
-SYNC_FILES="CODE_OF_CONDUCT.md LICENSE Makefile.common SECURITY.md .yamllint .github/workflows/golangci-lint.yml"
+SYNC_FILES="CODE_OF_CONDUCT.md LICENSE Makefile.common SECURITY.md"
 
 # Go to the root of the repo
 cd "$(git rev-parse --show-cdup)" || exit 1
@@ -46,6 +41,12 @@ source_dir="$(pwd)"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
+
+prometheus_orb_version="$(yq eval '.orbs.prometheus' .circleci/config.yml)"
+if [[ -z "${prometheus_orb_version}" ]]; then
+  echo_red '"ERROR: Unable to get CircleCI orb version'
+  exit 1
+fi
 
 ## Internal functions
 github_api() {
@@ -90,13 +91,22 @@ check_license() {
   echo "$1" | grep --quiet --no-messages --ignore-case 'Apache License'
 }
 
-check_go() {
+check_circleci_orb() {
   local org_repo
   local default_branch
   org_repo="$1"
   default_branch="$2"
+  local ci_config_url="https://raw.githubusercontent.com/${org_repo}/${default_branch}/.circleci/config.yml"
 
-  curl -sLf -o /dev/null "https://raw.githubusercontent.com/${org_repo}/${default_branch}/go.mod"
+  orb_version="$(curl -sL --fail "${ci_config_url}" | yq eval '.orbs.prometheus' -)"
+  if [[ -z "${orb_version}" ]]; then
+    echo_red "ERROR: Failed to fetch CirleCI orb version from '${org_repo}'"
+    return 1
+  fi
+
+  if [[ "${orb_version}" != "null" && "${orb_version}" != "${prometheus_orb_version}" ]]; then
+    echo "CircleCI-orb"
+  fi
 }
 
 process_repo() {
@@ -121,14 +131,10 @@ process_repo() {
       echo "LICENSE in ${org_repo} is not apache, skipping."
       continue
     fi
-    if [[ "${source_file}" == '.github/workflows/golangci-lint.yml' ]] && ! check_go "${org_repo}" "${default_branch}" ; then
-      echo "${org_repo} is not Go, skipping .github/workflows/golangci-lint.yml."
-      continue
-    fi
     if [[ -z "${target_file}" ]]; then
       echo "${source_file} doesn't exist in ${org_repo}"
       case "${source_file}" in
-        CODE_OF_CONDUCT.md | SECURITY.md | .github/workflows/golangci-lint.yml)
+        CODE_OF_CONDUCT.md | SECURITY.md)
           echo "${source_file} missing in ${org_repo}, force updating."
           needs_update+=("${source_file}")
           ;;
@@ -144,6 +150,13 @@ process_repo() {
     needs_update+=("${source_file}")
   done
 
+  local circleci
+  circleci="$(check_circleci_orb "${org_repo}" "${default_branch}")"
+  if [[ -n "${circleci}" ]]; then
+    echo "${circleci} needs updating."
+    needs_update+=("${circleci}")
+  fi
+
   if [[ "${#needs_update[@]}" -eq 0 ]] ; then
     echo "No files need sync."
     return
@@ -154,12 +167,10 @@ process_repo() {
   cd "${tmp_dir}/${org_repo}" || return 1
   git checkout -b "${branch}" || return 1
 
-  # If we need to add an Actions file this directory needs to be present.
-  mkdir -p "./.github/workflows"
-
   # Update the files in target repo by one from prometheus/prometheus.
   for source_file in "${needs_update[@]}"; do
     case "${source_file}" in
+      CircleCI-orb) yq eval -i ".orbs.prometheus = \"${prometheus_orb_version}\"" .circleci/config.yml ;;
       *) cp -f "${source_dir}/${source_file}" "./${source_file}" ;;
     esac
   done

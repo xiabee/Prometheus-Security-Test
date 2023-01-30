@@ -16,19 +16,18 @@ package template
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	html_template "html/template"
 	"math"
-	"net"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	text_template "text/template"
 	"time"
 
-	"github.com/grafana/regexp"
+	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 
@@ -45,8 +44,6 @@ var (
 		Name: "prometheus_template_text_expansions_total",
 		Help: "The total number of template text expansions.",
 	})
-
-	errNaNOrInf = errors.New("value is NaN or Inf")
 )
 
 func init() {
@@ -90,7 +87,7 @@ func query(ctx context.Context, q string, ts time.Time, queryFn QueryFunc) (quer
 	// promql.Vector is hard to work with in templates, so convert to
 	// base data types.
 	// TODO(fabxc): probably not true anymore after type rework.
-	result := make(queryResult, len(vector))
+	var result = make(queryResult, len(vector))
 	for n, v := range vector {
 		s := sample{
 			Value:  v.V,
@@ -107,14 +104,6 @@ func convertToFloat(i interface{}) (float64, error) {
 		return v, nil
 	case string:
 		return strconv.ParseFloat(v, 64)
-	case int:
-		return float64(v), nil
-	case uint:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case uint64:
-		return float64(v), nil
 	default:
 		return 0, fmt.Errorf("can't convert %T to float", v)
 	}
@@ -126,7 +115,6 @@ type Expander struct {
 	name    string
 	data    interface{}
 	funcMap text_template.FuncMap
-	options []string
 }
 
 // NewTemplateExpander returns a template expander ready to use.
@@ -138,11 +126,7 @@ func NewTemplateExpander(
 	timestamp model.Time,
 	queryFunc QueryFunc,
 	externalURL *url.URL,
-	options []string,
 ) *Expander {
-	if options == nil {
-		options = []string{"missingkey=zero"}
-	}
 	return &Expander{
 		text: text,
 		name: name,
@@ -181,7 +165,7 @@ func NewTemplateExpander(
 				return html_template.HTML(text)
 			},
 			"match":     regexp.MatchString,
-			"title":     strings.Title, // nolint:staticcheck
+			"title":     strings.Title,
 			"toUpper":   strings.ToUpper,
 			"toLower":   strings.ToLower,
 			"graphLink": strutil.GraphLinkForExpression,
@@ -190,28 +174,6 @@ func NewTemplateExpander(
 				sorter := queryResultByLabelSorter{v[:], label}
 				sort.Stable(sorter)
 				return v
-			},
-			"stripPort": func(hostPort string) string {
-				host, _, err := net.SplitHostPort(hostPort)
-				if err != nil {
-					return hostPort
-				}
-				return host
-			},
-			"stripDomain": func(hostPort string) string {
-				host, port, err := net.SplitHostPort(hostPort)
-				if err != nil {
-					host = hostPort
-				}
-				ip := net.ParseIP(host)
-				if ip != nil {
-					return hostPort
-				}
-				host = strings.Split(host, ".")[0]
-				if port != "" {
-					return net.JoinHostPort(host, port)
-				}
-				return host
 			},
 			"humanize": func(i interface{}) (string, error) {
 				v, err := convertToFloat(i)
@@ -277,11 +239,10 @@ func NewTemplateExpander(
 						sign = "-"
 						v = -v
 					}
-					duration := int64(v)
-					seconds := duration % 60
-					minutes := (duration / 60) % 60
-					hours := (duration / 60 / 60) % 24
-					days := duration / 60 / 60 / 24
+					seconds := int64(v) % 60
+					minutes := (int64(v) / 60) % 60
+					hours := (int64(v) / 60 / 60) % 24
+					days := int64(v) / 60 / 60 / 24
 					// For days to minutes, we display seconds as an integer.
 					if days != 0 {
 						return fmt.Sprintf("%s%dd %dh %dm %ds", sign, days, hours, minutes, seconds), nil
@@ -317,24 +278,11 @@ func NewTemplateExpander(
 				if err != nil {
 					return "", err
 				}
-
-				tm, err := floatToTime(v)
-				switch {
-				case errors.Is(err, errNaNOrInf):
+				if math.IsNaN(v) || math.IsInf(v, 0) {
 					return fmt.Sprintf("%.4g", v), nil
-				case err != nil:
-					return "", err
 				}
-
-				return fmt.Sprint(tm), nil
-			},
-			"toTime": func(i interface{}) (*time.Time, error) {
-				v, err := convertToFloat(i)
-				if err != nil {
-					return nil, err
-				}
-
-				return floatToTime(v)
+				t := model.TimeFromUnixNano(int64(v * 1e9)).Time().UTC()
+				return fmt.Sprint(t), nil
 			},
 			"pathPrefix": func() string {
 				return externalURL.Path
@@ -342,29 +290,19 @@ func NewTemplateExpander(
 			"externalURL": func() string {
 				return externalURL.String()
 			},
-			"parseDuration": func(d string) (float64, error) {
-				v, err := model.ParseDuration(d)
-				if err != nil {
-					return 0, err
-				}
-				return float64(time.Duration(v)) / float64(time.Second), nil
-			},
 		},
-		options: options,
 	}
 }
 
 // AlertTemplateData returns the interface to be used in expanding the template.
-func AlertTemplateData(labels, externalLabels map[string]string, externalURL string, value float64) interface{} {
+func AlertTemplateData(labels map[string]string, externalLabels map[string]string, value float64) interface{} {
 	return struct {
 		Labels         map[string]string
 		ExternalLabels map[string]string
-		ExternalURL    string
 		Value          float64
 	}{
 		Labels:         labels,
 		ExternalLabels: externalLabels,
-		ExternalURL:    externalURL,
 		Value:          value,
 	}
 }
@@ -386,7 +324,7 @@ func (te Expander) Expand() (result string, resultErr error) {
 			var ok bool
 			resultErr, ok = r.(error)
 			if !ok {
-				resultErr = fmt.Errorf("panic expanding template %v: %v", te.name, r)
+				resultErr = errors.Errorf("panic expanding template %v: %v", te.name, r)
 			}
 		}
 		if resultErr != nil {
@@ -396,16 +334,14 @@ func (te Expander) Expand() (result string, resultErr error) {
 
 	templateTextExpansionTotal.Inc()
 
-	tmpl := text_template.New(te.name).Funcs(te.funcMap)
-	tmpl.Option(te.options...)
-	tmpl, err := tmpl.Parse(te.text)
+	tmpl, err := text_template.New(te.name).Funcs(te.funcMap).Option("missingkey=zero").Parse(te.text)
 	if err != nil {
-		return "", fmt.Errorf("error parsing template %v: %w", te.name, err)
+		return "", errors.Wrapf(err, "error parsing template %v", te.name)
 	}
 	var buffer bytes.Buffer
 	err = tmpl.Execute(&buffer, te.data)
 	if err != nil {
-		return "", fmt.Errorf("error executing template %v: %w", te.name, err)
+		return "", errors.Wrapf(err, "error executing template %v", te.name)
 	}
 	return buffer.String(), nil
 }
@@ -417,13 +353,13 @@ func (te Expander) ExpandHTML(templateFiles []string) (result string, resultErr 
 			var ok bool
 			resultErr, ok = r.(error)
 			if !ok {
-				resultErr = fmt.Errorf("panic expanding template %s: %v", te.name, r)
+				resultErr = errors.Errorf("panic expanding template %s: %v", te.name, r)
 			}
 		}
 	}()
 
 	tmpl := html_template.New(te.name).Funcs(html_template.FuncMap(te.funcMap))
-	tmpl.Option(te.options...)
+	tmpl.Option("missingkey=zero")
 	tmpl.Funcs(html_template.FuncMap{
 		"tmpl": func(name string, data interface{}) (html_template.HTML, error) {
 			var buffer bytes.Buffer
@@ -433,18 +369,18 @@ func (te Expander) ExpandHTML(templateFiles []string) (result string, resultErr 
 	})
 	tmpl, err := tmpl.Parse(te.text)
 	if err != nil {
-		return "", fmt.Errorf("error parsing template %v: %w", te.name, err)
+		return "", errors.Wrapf(err, "error parsing template %v", te.name)
 	}
 	if len(templateFiles) > 0 {
 		_, err = tmpl.ParseFiles(templateFiles...)
 		if err != nil {
-			return "", fmt.Errorf("error parsing template files for %v: %w", te.name, err)
+			return "", errors.Wrapf(err, "error parsing template files for %v", te.name)
 		}
 	}
 	var buffer bytes.Buffer
 	err = tmpl.Execute(&buffer, te.data)
 	if err != nil {
-		return "", fmt.Errorf("error executing template %v: %w", te.name, err)
+		return "", errors.Wrapf(err, "error executing template %v", te.name)
 	}
 	return buffer.String(), nil
 }
@@ -456,16 +392,4 @@ func (te Expander) ParseTest() error {
 		return err
 	}
 	return nil
-}
-
-func floatToTime(v float64) (*time.Time, error) {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return nil, errNaNOrInf
-	}
-	timestamp := v * 1e9
-	if timestamp > math.MaxInt64 || timestamp < math.MinInt64 {
-		return nil, fmt.Errorf("%v cannot be represented as a nanoseconds timestamp since it overflows int64", v)
-	}
-	t := model.TimeFromUnixNano(int64(timestamp)).Time().UTC()
-	return &t, nil
 }

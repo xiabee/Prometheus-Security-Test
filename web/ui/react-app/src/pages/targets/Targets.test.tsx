@@ -4,7 +4,10 @@ import Targets from './Targets';
 import ScrapePoolList from './ScrapePoolList';
 
 describe('Targets', () => {
-  const targets = shallow(<Targets />);
+  const defaultProps = {
+    pathPrefix: '..',
+  };
+  const targets = shallow(<Targets {...defaultProps} />);
   describe('Header', () => {
     const h2 = targets.find('h2');
     it('renders a header', () => {

@@ -17,10 +17,8 @@ import (
 	"encoding/binary"
 	"hash"
 	"hash/crc32"
-	"math"
 	"unsafe"
 
-	"github.com/dennwc/varint"
 	"github.com/pkg/errors"
 )
 
@@ -41,7 +39,6 @@ func (e *Encbuf) Len() int    { return len(e.B) }
 
 func (e *Encbuf) PutString(s string) { e.B = append(e.B, s...) }
 func (e *Encbuf) PutByte(c byte)     { e.B = append(e.B, c) }
-func (e *Encbuf) PutBytes(b []byte)  { e.B = append(e.B, b...) }
 
 func (e *Encbuf) PutBE32int(x int)      { e.PutBE32(uint32(x)) }
 func (e *Encbuf) PutUvarint32(x uint32) { e.PutUvarint64(uint64(x)) }
@@ -56,10 +53,6 @@ func (e *Encbuf) PutBE32(x uint32) {
 func (e *Encbuf) PutBE64(x uint64) {
 	binary.BigEndian.PutUint64(e.C[:], x)
 	e.B = append(e.B, e.C[:8]...)
-}
-
-func (e *Encbuf) PutBEFloat64(x float64) {
-	e.PutBE64(math.Float64bits(x))
 }
 
 func (e *Encbuf) PutUvarint64(x uint64) {
@@ -77,12 +70,6 @@ func (e *Encbuf) PutUvarintStr(s string) {
 	b := *(*[]byte)(unsafe.Pointer(&s))
 	e.PutUvarint(len(b))
 	e.PutString(s)
-}
-
-// PutUvarintBytes writes a variable length byte buffer.
-func (e *Encbuf) PutUvarintBytes(b []byte) {
-	e.PutUvarint(len(b))
-	e.PutBytes(b)
 }
 
 // PutHash appends a hash over the buffers current contents to the buffer.
@@ -133,6 +120,7 @@ func NewDecbufAt(bs ByteSlice, off int, castagnoliTable *crc32.Table) Decbuf {
 	dec := Decbuf{B: b[:len(b)-4]}
 
 	if castagnoliTable != nil {
+
 		if exp := binary.BigEndian.Uint32(b[len(b)-4:]); dec.Crc32(castagnoliTable) != exp {
 			return Decbuf{E: ErrInvalidChecksum}
 		}
@@ -151,7 +139,7 @@ func NewDecbufUvarintAt(bs ByteSlice, off int, castagnoliTable *crc32.Table) Dec
 	}
 	b := bs.Range(off, off+binary.MaxVarintLen32)
 
-	l, n := varint.Uvarint(b)
+	l, n := binary.Uvarint(b)
 	if n <= 0 || n > binary.MaxVarintLen32 {
 		return Decbuf{E: errors.Errorf("invalid uvarint %d", n)}
 	}
@@ -178,10 +166,9 @@ func NewDecbufRaw(bs ByteSlice, length int) Decbuf {
 	return Decbuf{B: bs.Range(0, length)}
 }
 
-func (d *Decbuf) Uvarint() int      { return int(d.Uvarint64()) }
-func (d *Decbuf) Uvarint32() uint32 { return uint32(d.Uvarint64()) }
-func (d *Decbuf) Be32int() int      { return int(d.Be32()) }
-func (d *Decbuf) Be64int64() int64  { return int64(d.Be64()) }
+func (d *Decbuf) Uvarint() int     { return int(d.Uvarint64()) }
+func (d *Decbuf) Be32int() int     { return int(d.Be32()) }
+func (d *Decbuf) Be64int64() int64 { return int64(d.Be64()) }
 
 // Crc32 returns a CRC32 checksum over the remaining bytes.
 func (d *Decbuf) Crc32(castagnoliTable *crc32.Table) uint32 {
@@ -220,16 +207,10 @@ func (d *Decbuf) Varint64() int64 {
 	if d.E != nil {
 		return 0
 	}
-	// Decode as unsigned first, since that's what the varint library implements.
-	ux, n := varint.Uvarint(d.B)
+	x, n := binary.Varint(d.B)
 	if n < 1 {
 		d.E = ErrInvalidSize
 		return 0
-	}
-	// Now decode "ZigZag encoding" https://developers.google.com/protocol-buffers/docs/encoding#signed_integers.
-	x := int64(ux >> 1)
-	if ux&1 != 0 {
-		x = ^x
 	}
 	d.B = d.B[n:]
 	return x
@@ -239,7 +220,7 @@ func (d *Decbuf) Uvarint64() uint64 {
 	if d.E != nil {
 		return 0
 	}
-	x, n := varint.Uvarint(d.B)
+	x, n := binary.Uvarint(d.B)
 	if n < 1 {
 		d.E = ErrInvalidSize
 		return 0
@@ -259,10 +240,6 @@ func (d *Decbuf) Be64() uint64 {
 	x := binary.BigEndian.Uint64(d.B)
 	d.B = d.B[8:]
 	return x
-}
-
-func (d *Decbuf) Be64Float64() float64 {
-	return math.Float64frombits(d.Be64())
 }
 
 func (d *Decbuf) Be32() uint32 {

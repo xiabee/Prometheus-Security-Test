@@ -17,24 +17,21 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/go-kit/log"
-	"github.com/stretchr/testify/require"
-
-	"github.com/prometheus/prometheus/model/exemplar"
-	"github.com/prometheus/prometheus/model/histogram"
-	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/model/metadata"
+	"github.com/go-kit/kit/log"
+	"github.com/prometheus/prometheus/pkg/exemplar"
+	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRemoteWriteHandler(t *testing.T) {
-	buf, _, err := buildWriteRequest(writeRequestFixture.Timeseries, nil, nil, nil)
+	buf, _, err := buildWriteRequest(writeRequestFixture.Timeseries, nil, nil)
 	require.NoError(t, err)
 
 	req, err := http.NewRequest("", "", bytes.NewReader(buf))
@@ -50,89 +47,27 @@ func TestRemoteWriteHandler(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 
 	i := 0
-	j := 0
-	k := 0
 	for _, ts := range writeRequestFixture.Timeseries {
 		labels := labelProtosToLabels(ts.Labels)
 		for _, s := range ts.Samples {
 			require.Equal(t, mockSample{labels, s.Timestamp, s.Value}, appendable.samples[i])
 			i++
 		}
-
-		for _, e := range ts.Exemplars {
-			exemplarLabels := labelProtosToLabels(e.Labels)
-			require.Equal(t, mockExemplar{labels, exemplarLabels, e.Timestamp, e.Value}, appendable.exemplars[j])
-			j++
-		}
-
-		for _, hp := range ts.Histograms {
-			h := HistogramProtoToHistogram(hp)
-			require.Equal(t, mockHistogram{labels, hp.Timestamp, h}, appendable.histograms[k])
-			k++
-		}
 	}
 }
 
-func TestOutOfOrderSample(t *testing.T) {
+func TestOutOfOrder(t *testing.T) {
 	buf, _, err := buildWriteRequest([]prompb.TimeSeries{{
 		Labels:  []prompb.Label{{Name: "__name__", Value: "test_metric"}},
 		Samples: []prompb.Sample{{Value: 1, Timestamp: 0}},
-	}}, nil, nil, nil)
+	}}, nil, nil)
 	require.NoError(t, err)
 
 	req, err := http.NewRequest("", "", bytes.NewReader(buf))
 	require.NoError(t, err)
 
 	appendable := &mockAppendable{
-		latestSample: 100,
-	}
-	handler := NewWriteHandler(log.NewNopLogger(), appendable)
-
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-
-	resp := recorder.Result()
-	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-}
-
-// This test case currently aims to verify that the WriteHandler endpoint
-// don't fail on ingestion errors since the exemplar storage is
-// still experimental.
-func TestOutOfOrderExemplar(t *testing.T) {
-	buf, _, err := buildWriteRequest([]prompb.TimeSeries{{
-		Labels:    []prompb.Label{{Name: "__name__", Value: "test_metric"}},
-		Exemplars: []prompb.Exemplar{{Labels: []prompb.Label{{Name: "foo", Value: "bar"}}, Value: 1, Timestamp: 0}},
-	}}, nil, nil, nil)
-	require.NoError(t, err)
-
-	req, err := http.NewRequest("", "", bytes.NewReader(buf))
-	require.NoError(t, err)
-
-	appendable := &mockAppendable{
-		latestExemplar: 100,
-	}
-	handler := NewWriteHandler(log.NewNopLogger(), appendable)
-
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-
-	resp := recorder.Result()
-	// TODO: update to require.Equal(t, http.StatusConflict, resp.StatusCode) once exemplar storage is not experimental.
-	require.Equal(t, http.StatusNoContent, resp.StatusCode)
-}
-
-func TestOutOfOrderHistogram(t *testing.T) {
-	buf, _, err := buildWriteRequest([]prompb.TimeSeries{{
-		Labels:     []prompb.Label{{Name: "__name__", Value: "test_metric"}},
-		Histograms: []prompb.Histogram{HistogramToHistogramProto(0, &testHistogram)},
-	}}, nil, nil, nil)
-	require.NoError(t, err)
-
-	req, err := http.NewRequest("", "", bytes.NewReader(buf))
-	require.NoError(t, err)
-
-	appendable := &mockAppendable{
-		latestHistogram: 100,
+		latest: 100,
 	}
 	handler := NewWriteHandler(log.NewNopLogger(), appendable)
 
@@ -144,7 +79,7 @@ func TestOutOfOrderHistogram(t *testing.T) {
 }
 
 func TestCommitErr(t *testing.T) {
-	buf, _, err := buildWriteRequest(writeRequestFixture.Timeseries, nil, nil, nil)
+	buf, _, err := buildWriteRequest(writeRequestFixture.Timeseries, nil, nil)
 	require.NoError(t, err)
 
 	req, err := http.NewRequest("", "", bytes.NewReader(buf))
@@ -159,20 +94,16 @@ func TestCommitErr(t *testing.T) {
 	handler.ServeHTTP(recorder, req)
 
 	resp := recorder.Result()
-	body, err := io.ReadAll(resp.Body)
+	body, err := ioutil.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	require.Equal(t, "commit error\n", string(body))
 }
 
 type mockAppendable struct {
-	latestSample    int64
-	samples         []mockSample
-	latestExemplar  int64
-	exemplars       []mockExemplar
-	latestHistogram int64
-	histograms      []mockHistogram
-	commitErr       error
+	latest    int64
+	samples   []mockSample
+	commitErr error
 }
 
 type mockSample struct {
@@ -181,29 +112,16 @@ type mockSample struct {
 	v float64
 }
 
-type mockExemplar struct {
-	l  labels.Labels
-	el labels.Labels
-	t  int64
-	v  float64
-}
-
-type mockHistogram struct {
-	l labels.Labels
-	t int64
-	h *histogram.Histogram
-}
-
 func (m *mockAppendable) Appender(_ context.Context) storage.Appender {
 	return m
 }
 
-func (m *mockAppendable) Append(_ storage.SeriesRef, l labels.Labels, t int64, v float64) (storage.SeriesRef, error) {
-	if t < m.latestSample {
+func (m *mockAppendable) Append(_ uint64, l labels.Labels, t int64, v float64) (uint64, error) {
+	if t < m.latest {
 		return 0, storage.ErrOutOfOrderSample
 	}
 
-	m.latestSample = t
+	m.latest = t
 	m.samples = append(m.samples, mockSample{l, t, v})
 	return 0, nil
 }
@@ -216,28 +134,7 @@ func (*mockAppendable) Rollback() error {
 	return fmt.Errorf("not implemented")
 }
 
-func (m *mockAppendable) AppendExemplar(_ storage.SeriesRef, l labels.Labels, e exemplar.Exemplar) (storage.SeriesRef, error) {
-	if e.Ts < m.latestExemplar {
-		return 0, storage.ErrOutOfOrderExemplar
-	}
-
-	m.latestExemplar = e.Ts
-	m.exemplars = append(m.exemplars, mockExemplar{l, e.Labels, e.Ts, e.Value})
-	return 0, nil
-}
-
-func (m *mockAppendable) AppendHistogram(ref storage.SeriesRef, l labels.Labels, t int64, h *histogram.Histogram) (storage.SeriesRef, error) {
-	if t < m.latestHistogram {
-		return 0, storage.ErrOutOfOrderSample
-	}
-
-	m.latestHistogram = t
-	m.histograms = append(m.histograms, mockHistogram{l, t, h})
-	return 0, nil
-}
-
-func (m *mockAppendable) UpdateMetadata(_ storage.SeriesRef, _ labels.Labels, _ metadata.Metadata) (storage.SeriesRef, error) {
-	// TODO: Wire metadata in a mockAppendable field when we get around to handling metadata in remote_write.
-	// UpdateMetadata is no-op for remote write (where mockAppendable is being used to test) for now.
+func (*mockAppendable) AppendExemplar(ref uint64, l labels.Labels, e exemplar.Exemplar) (uint64, error) {
+	// noop until we implement exemplars over remote write
 	return 0, nil
 }

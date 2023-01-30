@@ -21,9 +21,8 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/require"
 
-	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/storage"
-	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/util/teststorage"
 )
 
@@ -91,7 +90,7 @@ func TestFanout_SelectSorted(t *testing.T) {
 			seriesLabels := series.Labels()
 			labelsResult = seriesLabels
 			iterator := series.Iterator()
-			for iterator.Next() == chunkenc.ValFloat {
+			for iterator.Next() {
 				timestamp, value := iterator.At()
 				result[timestamp] = value
 			}
@@ -117,7 +116,7 @@ func TestFanout_SelectSorted(t *testing.T) {
 			seriesLabels := series.Labels()
 			labelsResult = seriesLabels
 			iterator := series.Iterator()
-			for iterator.Next() == chunkenc.ValFloat {
+			for iterator.Next() {
 				timestamp, value := iterator.At()
 				result[timestamp] = value
 			}
@@ -235,7 +234,7 @@ func (errQuerier) LabelValues(name string, matchers ...*labels.Matcher) ([]strin
 	return nil, nil, errors.New("label values error")
 }
 
-func (errQuerier) LabelNames(...*labels.Matcher) ([]string, storage.Warnings, error) {
+func (errQuerier) LabelNames() ([]string, storage.Warnings, error) {
 	return nil, nil, errors.New("label names error")
 }
 

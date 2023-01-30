@@ -3,43 +3,21 @@ import { shallow } from 'enzyme';
 import App from './App';
 import Navigation from './Navbar';
 import { Container } from 'reactstrap';
-import { Route } from 'react-router-dom';
-import {
-  AgentPage,
-  AlertsPage,
-  ConfigPage,
-  FlagsPage,
-  RulesPage,
-  ServiceDiscoveryPage,
-  StatusPage,
-  TargetsPage,
-  TSDBStatusPage,
-  PanelListPage,
-} from './pages';
+import { Router } from '@reach/router';
+import { Alerts, Config, Flags, Rules, ServiceDiscovery, Status, Targets, TSDBStatus, PanelList } from './pages';
 
 describe('App', () => {
-  const app = shallow(<App consolesLink={null} agentMode={false} />);
+  const app = shallow(<App />);
 
   it('navigates', () => {
     expect(app.find(Navigation)).toHaveLength(1);
   });
   it('routes', () => {
-    [
-      AgentPage,
-      AlertsPage,
-      ConfigPage,
-      FlagsPage,
-      RulesPage,
-      ServiceDiscoveryPage,
-      StatusPage,
-      TargetsPage,
-      TSDBStatusPage,
-      PanelListPage,
-    ].forEach((component) => {
+    [Alerts, Config, Flags, Rules, ServiceDiscovery, Status, Targets, TSDBStatus, PanelList].forEach(component => {
       const c = app.find(component);
       expect(c).toHaveLength(1);
     });
-    expect(app.find(Route)).toHaveLength(10);
+    expect(app.find(Router)).toHaveLength(1);
     expect(app.find(Container)).toHaveLength(1);
   });
 });

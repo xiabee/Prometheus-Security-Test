@@ -121,7 +121,11 @@ describe('TSDB Stats', () => {
         credentials: 'same-origin',
       });
 
-      const headStats = page.find(Table).at(0).find('tbody').find('td');
+      const headStats = page
+        .find(Table)
+        .at(0)
+        .find('tbody')
+        .find('td');
       ['508', '937', '1234', '2020-06-07T08:00:00.000Z (1591516800000)', '2020-08-31T18:00:00.143Z (1598896800143)'].forEach(
         (value, i) => {
           expect(headStats.at(i).text()).toEqual(value);
@@ -166,7 +170,11 @@ describe('TSDB Stats', () => {
 
       expect(page.find('h2').text()).toEqual('TSDB Status');
 
-      const headStats = page.find(Table).at(0).find('tbody').find('td');
+      const headStats = page
+        .find(Table)
+        .at(0)
+        .find('tbody')
+        .find('td');
       ['0', '0', '0', 'No datapoints yet', 'No datapoints yet'].forEach((value, i) => {
         expect(headStats.at(i).text()).toEqual(value);
       });
@@ -191,7 +199,11 @@ describe('TSDB Stats', () => {
 
       expect(page.find('h2').text()).toEqual('TSDB Status');
 
-      const headStats = page.find(Table).at(0).find('tbody').find('td');
+      const headStats = page
+        .find(Table)
+        .at(0)
+        .find('tbody')
+        .find('td');
       ['1', '0', '0', 'Error parsing time (9223372036854776000)', 'Error parsing time (-9223372036854776000)'].forEach(
         (value, i) => {
           expect(headStats.at(i).text()).toEqual(value);

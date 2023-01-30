@@ -17,21 +17,18 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/prometheus/prometheus/tsdb/chunkenc"
 )
 
 func TestMemoizedSeriesIterator(t *testing.T) {
-	// TODO(beorn7): Include histograms in testing.
 	var it *MemoizedSeriesIterator
 
 	sampleEq := func(ets int64, ev float64) {
-		ts, v := it.At()
+		ts, v := it.Values()
 		require.Equal(t, ets, ts, "timestamp mismatch")
 		require.Equal(t, ev, v, "value mismatch")
 	}
 	prevSampleEq := func(ets int64, ev float64, eok bool) {
-		ts, v, _, _, ok := it.PeekPrev()
+		ts, v, ok := it.PeekPrev()
 		require.Equal(t, eok, ok, "exist mismatch")
 		require.Equal(t, ets, ts, "timestamp mismatch")
 		require.Equal(t, ev, v, "value mismatch")
@@ -48,41 +45,40 @@ func TestMemoizedSeriesIterator(t *testing.T) {
 		sample{t: 101, v: 10},
 	}), 2)
 
-	require.Equal(t, it.Seek(-123), chunkenc.ValFloat, "seek failed")
+	require.True(t, it.Seek(-123), "seek failed")
 	sampleEq(1, 2)
 	prevSampleEq(0, 0, false)
 
-	require.Equal(t, it.Next(), chunkenc.ValFloat, "next failed")
+	require.True(t, it.Next(), "next failed")
 	sampleEq(2, 3)
 	prevSampleEq(1, 2, true)
 
-	require.Equal(t, it.Next(), chunkenc.ValFloat, "next failed")
-	require.Equal(t, it.Next(), chunkenc.ValFloat, "next failed")
-	require.Equal(t, it.Next(), chunkenc.ValFloat, "next failed")
+	require.True(t, it.Next(), "next failed")
+	require.True(t, it.Next(), "next failed")
+	require.True(t, it.Next(), "next failed")
 	sampleEq(5, 6)
 	prevSampleEq(4, 5, true)
 
-	require.Equal(t, it.Seek(5), chunkenc.ValFloat, "seek failed")
+	require.True(t, it.Seek(5), "seek failed")
 	sampleEq(5, 6)
 	prevSampleEq(4, 5, true)
 
-	require.Equal(t, it.Seek(101), chunkenc.ValFloat, "seek failed")
+	require.True(t, it.Seek(101), "seek failed")
 	sampleEq(101, 10)
 	prevSampleEq(100, 9, true)
 
-	require.Equal(t, it.Next(), chunkenc.ValNone, "next succeeded unexpectedly")
-	require.Equal(t, it.Seek(1024), chunkenc.ValNone, "seek succeeded unexpectedly")
+	require.False(t, it.Next(), "next succeeded unexpectedly")
 }
 
 func BenchmarkMemoizedSeriesIterator(b *testing.B) {
 	// Simulate a 5 minute rate.
 	it := NewMemoizedIterator(newFakeSeriesIterator(int64(b.N), 30), 5*60)
 
-	b.SetBytes(16)
+	b.SetBytes(int64(b.N * 16))
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for it.Next() != chunkenc.ValNone {
+	for it.Next() {
 		// scan everything
 	}
 	require.NoError(b, it.Err())

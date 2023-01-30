@@ -1,7 +1,8 @@
 import React, { FC } from 'react';
+import { RouteComponentProps } from '@reach/router';
 import { APIResponse } from '../../hooks/useFetch';
 import { Alert, Table, Badge } from 'reactstrap';
-import { Link } from 'react-router-dom';
+import { Link } from '@reach/router';
 import { formatRelative, createExpressionLink, humanizeDuration, formatDuration } from '../../utils';
 import { Rule } from '../../types/types';
 import { now } from 'moment';
@@ -22,7 +23,7 @@ export interface RulesMap {
   groups: RuleGroup[];
 }
 
-const GraphExpressionLink: FC<{ expr: string; text: string; title: string }> = (props) => {
+const GraphExpressionLink: FC<{ expr: string; text: string; title: string }> = props => {
   return (
     <>
       <strong>{props.title}:</strong>
@@ -34,7 +35,7 @@ const GraphExpressionLink: FC<{ expr: string; text: string; title: string }> = (
   );
 };
 
-export const RulesContent: FC<RulesContentProps> = ({ response }) => {
+export const RulesContent: FC<RouteComponentProps & RulesContentProps> = ({ response }) => {
   const getBadgeColor = (state: string) => {
     switch (state) {
       case 'ok':

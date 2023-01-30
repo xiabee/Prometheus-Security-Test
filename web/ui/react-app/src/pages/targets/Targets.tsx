@@ -1,7 +1,8 @@
 import React, { FC } from 'react';
+import { RouteComponentProps } from '@reach/router';
 import ScrapePoolList from './ScrapePoolList';
 
-const Targets: FC = () => {
+const Targets: FC<RouteComponentProps> = () => {
   return (
     <>
       <h2>Targets</h2>

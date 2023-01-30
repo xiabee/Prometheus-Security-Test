@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,9 +28,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/go-openapi/strfmt"
+	"github.com/pkg/errors"
 	"github.com/prometheus/alertmanager/api/v2/models"
 	"github.com/prometheus/client_golang/prometheus"
 	config_util "github.com/prometheus/common/config"
@@ -39,8 +41,8 @@ import (
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
-	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/model/relabel"
+	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/pkg/relabel"
 )
 
 const (
@@ -301,23 +303,14 @@ func (n *Manager) nextBatch() []*Alert {
 
 // Run dispatches notifications continuously.
 func (n *Manager) Run(tsets <-chan map[string][]*targetgroup.Group) {
+
 	for {
-		// The select is split in two parts, such as we will first try to read
-		// new alertmanager targets if they are available, before sending new
-		// alerts.
 		select {
 		case <-n.ctx.Done():
 			return
 		case ts := <-tsets:
 			n.reload(ts)
-		default:
-			select {
-			case <-n.ctx.Done():
-				return
-			case ts := <-tsets:
-				n.reload(ts)
-			case <-n.more:
-			}
+		case <-n.more:
 		}
 		alerts := n.nextBatch()
 
@@ -361,7 +354,7 @@ func (n *Manager) Send(alerts ...*Alert) {
 			}
 		}
 
-		a.Labels = lb.Labels(a.Labels)
+		a.Labels = lb.Labels()
 	}
 
 	alerts = n.relabelAlerts(alerts)
@@ -591,13 +584,13 @@ func (n *Manager) sendOne(ctx context.Context, c *http.Client, url string, b []b
 		return err
 	}
 	defer func() {
-		io.Copy(io.Discard, resp.Body)
+		io.Copy(ioutil.Discard, resp.Body)
 		resp.Body.Close()
 	}()
 
 	// Any HTTP status 2xx is OK.
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("bad response status %s", resp.Status)
+		return errors.Errorf("bad response status %s", resp.Status)
 	}
 
 	return nil
@@ -609,7 +602,7 @@ func (n *Manager) Stop() {
 	n.cancel()
 }
 
-// Alertmanager holds Alertmanager endpoint information.
+// alertmanager holds Alertmanager endpoint information.
 type alertmanager interface {
 	url() *url.URL
 }
@@ -641,7 +634,7 @@ type alertmanagerSet struct {
 }
 
 func newAlertmanagerSet(cfg *config.AlertmanagerConfig, logger log.Logger, metrics *alertMetrics) (*alertmanagerSet, error) {
-	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, "alertmanager")
+	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, "alertmanager", config_util.WithHTTP2Disabled())
 	if err != nil {
 		return nil, err
 	}
@@ -661,7 +654,7 @@ func (s *alertmanagerSet) sync(tgs []*targetgroup.Group) {
 	allDroppedAms := []alertmanager{}
 
 	for _, tg := range tgs {
-		ams, droppedAms, err := AlertmanagerFromGroup(tg, s.cfg)
+		ams, droppedAms, err := alertmanagerFromGroup(tg, s.cfg)
 		if err != nil {
 			level.Error(s.logger).Log("msg", "Creating discovered Alertmanagers failed", "err", err)
 			continue
@@ -698,9 +691,9 @@ func postPath(pre string, v config.AlertmanagerAPIVersion) string {
 	return path.Join("/", pre, alertPushEndpoint)
 }
 
-// AlertmanagerFromGroup extracts a list of alertmanagers from a target group
+// alertmanagerFromGroup extracts a list of alertmanagers from a target group
 // and an associated AlertmanagerConfig.
-func AlertmanagerFromGroup(tg *targetgroup.Group, cfg *config.AlertmanagerConfig) ([]alertmanager, []alertmanager, error) {
+func alertmanagerFromGroup(tg *targetgroup.Group, cfg *config.AlertmanagerConfig) ([]alertmanager, []alertmanager, error) {
 	var res []alertmanager
 	var droppedAlertManagers []alertmanager
 
@@ -751,7 +744,7 @@ func AlertmanagerFromGroup(tg *targetgroup.Group, cfg *config.AlertmanagerConfig
 			case "https":
 				addr = addr + ":443"
 			default:
-				return nil, nil, fmt.Errorf("invalid scheme: %q", cfg.Scheme)
+				return nil, nil, errors.Errorf("invalid scheme: %q", cfg.Scheme)
 			}
 			lb.Set(model.AddressLabel, addr)
 		}

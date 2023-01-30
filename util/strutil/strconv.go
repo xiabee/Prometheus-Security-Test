@@ -16,11 +16,12 @@ package strutil
 import (
 	"fmt"
 	"net/url"
-
-	"github.com/grafana/regexp"
+	"regexp"
 )
 
-var invalidLabelCharRE = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+var (
+	invalidLabelCharRE = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+)
 
 // TableLinkForExpression creates an escaped relative link to the table view of
 // the provided expression.

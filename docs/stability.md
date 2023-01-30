@@ -1,6 +1,6 @@
 ---
 title: API Stability
-sort_rank: 10
+sort_rank: 9
 ---
 
 # API Stability Guarantees

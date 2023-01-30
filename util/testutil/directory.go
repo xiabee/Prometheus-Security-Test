@@ -16,6 +16,7 @@ package testutil
 import (
 	"crypto/sha256"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -72,8 +73,8 @@ type (
 	// the test flags, which we do not want in non-test binaries even if
 	// they make use of these utilities for some reason).
 	T interface {
-		Errorf(format string, args ...interface{})
-		FailNow()
+		Fatal(args ...interface{})
+		Fatalf(format string, args ...interface{})
 	}
 )
 
@@ -104,7 +105,9 @@ func (t temporaryDirectory) Close() {
 			err = os.RemoveAll(t.path)
 		}
 	}
-	require.NoError(t.tester, err)
+	if err != nil {
+		t.tester.Fatal(err)
+	}
 }
 
 func (t temporaryDirectory) Path() string {
@@ -119,8 +122,10 @@ func NewTemporaryDirectory(name string, t T) (handler TemporaryDirectory) {
 		err       error
 	)
 
-	directory, err = os.MkdirTemp(defaultDirectory, name)
-	require.NoError(t, err)
+	directory, err = ioutil.TempDir(defaultDirectory, name)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	handler = temporaryDirectory{
 		path:   directory,

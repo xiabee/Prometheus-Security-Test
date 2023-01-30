@@ -15,23 +15,27 @@ package remote
 
 import (
 	"context"
-	"fmt"
+	"io/ioutil"
 	"net/url"
+	"os"
 	"sort"
 	"testing"
 
+	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	config_util "github.com/prometheus/common/config"
 	"github.com/stretchr/testify/require"
 
 	"github.com/prometheus/prometheus/config"
-	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage"
 )
 
 func TestNoDuplicateReadConfigs(t *testing.T) {
-	dir := t.TempDir()
+	dir, err := ioutil.TempDir("", "TestNoDuplicateReadConfigs")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
 	cfg1 := config.RemoteReadConfig{
 		Name: "write-1",
@@ -122,7 +126,10 @@ func TestExternalLabelsQuerierAddExternalLabels(t *testing.T) {
 			added: labels.Labels{},
 		},
 		{
-			el: labels.FromStrings("dc", "berlin-01", "region", "europe"),
+			el: labels.Labels{
+				{Name: "dc", Value: "berlin-01"},
+				{Name: "region", Value: "europe"},
+			},
 			inMatchers: []*labels.Matcher{
 				labels.MustNewMatcher(labels.MatchEqual, "job", "api-server"),
 			},
@@ -131,10 +138,16 @@ func TestExternalLabelsQuerierAddExternalLabels(t *testing.T) {
 				labels.MustNewMatcher(labels.MatchEqual, "region", "europe"),
 				labels.MustNewMatcher(labels.MatchEqual, "dc", "berlin-01"),
 			},
-			added: labels.FromStrings("dc", "berlin-01", "region", "europe"),
+			added: labels.Labels{
+				{Name: "dc", Value: "berlin-01"},
+				{Name: "region", Value: "europe"},
+			},
 		},
 		{
-			el: labels.FromStrings("dc", "berlin-01", "region", "europe"),
+			el: labels.Labels{
+				{Name: "region", Value: "europe"},
+				{Name: "dc", Value: "berlin-01"},
+			},
 			inMatchers: []*labels.Matcher{
 				labels.MustNewMatcher(labels.MatchEqual, "job", "api-server"),
 				labels.MustNewMatcher(labels.MatchEqual, "dc", "munich-02"),
@@ -144,7 +157,9 @@ func TestExternalLabelsQuerierAddExternalLabels(t *testing.T) {
 				labels.MustNewMatcher(labels.MatchEqual, "region", "europe"),
 				labels.MustNewMatcher(labels.MatchEqual, "dc", "munich-02"),
 			},
-			added: labels.FromStrings("region", "europe"),
+			added: labels.Labels{
+				{Name: "region", Value: "europe"},
+			},
 		},
 	}
 
@@ -198,7 +213,7 @@ type mockedRemoteClient struct {
 
 func (c *mockedRemoteClient) Read(_ context.Context, query *prompb.Query) (*prompb.QueryResult, error) {
 	if c.got != nil {
-		return nil, fmt.Errorf("expected only one call to remote client got: %v", query)
+		return nil, errors.Errorf("expected only one call to remote client got: %v", query)
 	}
 	c.got = query
 
@@ -282,8 +297,10 @@ func TestSampleAndChunkQueryableClient(t *testing.T) {
 			matchers: []*labels.Matcher{
 				labels.MustNewMatcher(labels.MatchNotEqual, "a", "something"),
 			},
-			readRecent:     true,
-			externalLabels: labels.FromStrings("region", "europe"),
+			readRecent: true,
+			externalLabels: labels.Labels{
+				{Name: "region", Value: "europe"},
+			},
 
 			expectedQuery: &prompb.Query{
 				StartTimestampMs: 1,
@@ -305,8 +322,10 @@ func TestSampleAndChunkQueryableClient(t *testing.T) {
 				labels.MustNewMatcher(labels.MatchNotEqual, "a", "something"),
 				labels.MustNewMatcher(labels.MatchEqual, "region", "europe"),
 			},
-			readRecent:     true,
-			externalLabels: labels.FromStrings("region", "europe"),
+			readRecent: true,
+			externalLabels: labels.Labels{
+				{Name: "region", Value: "europe"},
+			},
 
 			expectedQuery: &prompb.Query{
 				StartTimestampMs: 1,
@@ -328,8 +347,10 @@ func TestSampleAndChunkQueryableClient(t *testing.T) {
 				labels.MustNewMatcher(labels.MatchNotEqual, "a", "something"),
 				labels.MustNewMatcher(labels.MatchEqual, "region", "us"),
 			},
-			readRecent:     true,
-			externalLabels: labels.FromStrings("region", "europe"),
+			readRecent: true,
+			externalLabels: labels.Labels{
+				{Name: "region", Value: "europe"},
+			},
 
 			expectedQuery: &prompb.Query{
 				StartTimestampMs: 1,
@@ -485,6 +506,7 @@ func TestSampleAndChunkQueryableClient(t *testing.T) {
 			}
 			require.NoError(t, ss.Err())
 			require.Equal(t, tc.expectedSeries, got)
+
 		})
 	}
 }

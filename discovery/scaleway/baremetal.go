@@ -25,11 +25,10 @@ import (
 	"github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/version"
-	"github.com/scaleway/scaleway-sdk-go/api/baremetal/v1"
-	"github.com/scaleway/scaleway-sdk-go/scw"
-
 	"github.com/prometheus/prometheus/discovery/refresh"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/scaleway/scaleway-sdk-go/api/baremetal/v1"
+	"github.com/scaleway/scaleway-sdk-go/scw"
 )
 
 type baremetalDiscovery struct {
@@ -71,7 +70,7 @@ func newBaremetalDiscovery(conf *SDConfig) (*baremetalDiscovery, error) {
 		tagsFilter: conf.TagsFilter,
 	}
 
-	rt, err := config.NewRoundTripperFromConfig(conf.HTTPClientConfig, "scaleway_sd")
+	rt, err := config.NewRoundTripperFromConfig(conf.HTTPClientConfig, "scaleway_sd", config.WithHTTP2Disabled())
 	if err != nil {
 		return nil, err
 	}

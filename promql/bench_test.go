@@ -21,15 +21,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/promql/parser"
-	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/util/teststorage"
 )
 
 func BenchmarkRangeQuery(b *testing.B) {
-	stor := teststorage.New(b)
-	defer stor.Close()
+	storage := teststorage.New(b)
+	defer storage.Close()
 	opts := EngineOpts{
 		Logger:     nil,
 		Reg:        nil,
@@ -63,16 +62,16 @@ func BenchmarkRangeQuery(b *testing.B) {
 		}
 		metrics = append(metrics, labels.FromStrings("__name__", "h_hundred", "l", strconv.Itoa(i), "le", "+Inf"))
 	}
-	refs := make([]storage.SeriesRef, len(metrics))
+	refs := make([]uint64, len(metrics))
 
 	// A day of data plus 10k steps.
 	numIntervals := 8640 + 10000
 
 	for s := 0; s < numIntervals; s++ {
-		a := stor.Appender(context.Background())
+		a := storage.Appender(context.Background())
 		ts := int64(s * 10000) // 10s interval.
 		for i, metric := range metrics {
-			ref, _ := a.Append(refs[i], metric, ts, float64(s)+float64(i)/float64(len(metrics)))
+			ref, _ := a.Append(refs[i], metric, ts, float64(s))
 			refs[i] = ref
 		}
 		if err := a.Commit(); err != nil {
@@ -131,9 +130,6 @@ func BenchmarkRangeQuery(b *testing.B) {
 		{
 			expr: "a_X unless b_X{l=~'.*[0-4]$'}",
 		},
-		{
-			expr: "a_X and b_X{l='notfound'}",
-		},
 		// Simple functions.
 		{
 			expr: "abs(a_X)",
@@ -163,9 +159,6 @@ func BenchmarkRangeQuery(b *testing.B) {
 		{
 			expr: "count_values('value', h_X)",
 		},
-		{
-			expr: "topk(1, a_X)",
-		},
 		// Combinations.
 		{
 			expr: "rate(a_X[1m]) + rate(b_X[1m])",
@@ -178,10 +171,6 @@ func BenchmarkRangeQuery(b *testing.B) {
 		},
 		{
 			expr: "histogram_quantile(0.9, rate(h_X[5m]))",
-		},
-		// Many-to-one join.
-		{
-			expr: "a_X + on(l) group_right a_one",
 		},
 	}
 
@@ -217,7 +206,7 @@ func BenchmarkRangeQuery(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				qry, err := engine.NewRangeQuery(
-					stor, nil, c.expr,
+					storage, c.expr,
 					time.Unix(int64((numIntervals-c.steps)*10), 0),
 					time.Unix(int64(numIntervals*10), 0), time.Second*10)
 				if err != nil {

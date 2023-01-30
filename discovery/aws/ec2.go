@@ -15,7 +15,6 @@ package aws
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -28,8 +27,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"github.com/go-kit/kit/log"
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
 
@@ -43,7 +42,6 @@ const (
 	ec2Label                  = model.MetaLabelPrefix + "ec2_"
 	ec2LabelAMI               = ec2Label + "ami"
 	ec2LabelAZ                = ec2Label + "availability_zone"
-	ec2LabelAZID              = ec2Label + "availability_zone_id"
 	ec2LabelArch              = ec2Label + "architecture"
 	ec2LabelIPv6Addresses     = ec2Label + "ipv6_addresses"
 	ec2LabelInstanceID        = ec2Label + "instance_id"
@@ -57,18 +55,19 @@ const (
 	ec2LabelPrivateIP         = ec2Label + "private_ip"
 	ec2LabelPublicDNS         = ec2Label + "public_dns_name"
 	ec2LabelPublicIP          = ec2Label + "public_ip"
-	ec2LabelRegion            = ec2Label + "region"
 	ec2LabelSubnetID          = ec2Label + "subnet_id"
 	ec2LabelTag               = ec2Label + "tag_"
 	ec2LabelVPCID             = ec2Label + "vpc_id"
 	ec2LabelSeparator         = ","
 )
 
-// DefaultEC2SDConfig is the default EC2 SD configuration.
-var DefaultEC2SDConfig = EC2SDConfig{
-	Port:            80,
-	RefreshInterval: model.Duration(60 * time.Second),
-}
+var (
+	// DefaultEC2SDConfig is the default EC2 SD configuration.
+	DefaultEC2SDConfig = EC2SDConfig{
+		Port:            80,
+		RefreshInterval: model.Duration(60 * time.Second),
+	}
+)
 
 func init() {
 	discovery.RegisterConfig(&EC2SDConfig{})
@@ -133,14 +132,8 @@ func (c *EC2SDConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // the Discoverer interface.
 type EC2Discovery struct {
 	*refresh.Discovery
-	logger log.Logger
-	cfg    *EC2SDConfig
-	ec2    *ec2.EC2
-
-	// azToAZID maps this account's availability zones to their underlying AZ
-	// ID, e.g. eu-west-2a -> euw2-az2. Refreshes are performed sequentially, so
-	// no locking is required.
-	azToAZID map[string]string
+	cfg *EC2SDConfig
+	ec2 *ec2.EC2
 }
 
 // NewEC2Discovery returns a new EC2Discovery which periodically refreshes its targets.
@@ -149,8 +142,7 @@ func NewEC2Discovery(conf *EC2SDConfig, logger log.Logger) *EC2Discovery {
 		logger = log.NewNopLogger()
 	}
 	d := &EC2Discovery{
-		logger: logger,
-		cfg:    conf,
+		cfg: conf,
 	}
 	d.Discovery = refresh.NewDiscovery(
 		logger,
@@ -161,7 +153,7 @@ func NewEC2Discovery(conf *EC2SDConfig, logger log.Logger) *EC2Discovery {
 	return d
 }
 
-func (d *EC2Discovery) ec2Client(ctx context.Context) (*ec2.EC2, error) {
+func (d *EC2Discovery) ec2Client() (*ec2.EC2, error) {
 	if d.ec2 != nil {
 		return d.ec2, nil
 	}
@@ -180,7 +172,7 @@ func (d *EC2Discovery) ec2Client(ctx context.Context) (*ec2.EC2, error) {
 		Profile: d.cfg.Profile,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("could not create aws session: %w", err)
+		return nil, errors.Wrap(err, "could not create aws session")
 	}
 
 	if d.cfg.RoleARN != "" {
@@ -193,20 +185,8 @@ func (d *EC2Discovery) ec2Client(ctx context.Context) (*ec2.EC2, error) {
 	return d.ec2, nil
 }
 
-func (d *EC2Discovery) refreshAZIDs(ctx context.Context) error {
-	azs, err := d.ec2.DescribeAvailabilityZonesWithContext(ctx, &ec2.DescribeAvailabilityZonesInput{})
-	if err != nil {
-		return err
-	}
-	d.azToAZID = make(map[string]string, len(azs.AvailabilityZones))
-	for _, az := range azs.AvailabilityZones {
-		d.azToAZID[*az.ZoneName] = *az.ZoneId
-	}
-	return nil
-}
-
 func (d *EC2Discovery) refresh(ctx context.Context) ([]*targetgroup.Group, error) {
-	ec2Client, err := d.ec2Client(ctx)
+	ec2Client, err := d.ec2Client()
 	if err != nil {
 		return nil, err
 	}
@@ -223,27 +203,16 @@ func (d *EC2Discovery) refresh(ctx context.Context) ([]*targetgroup.Group, error
 		})
 	}
 
-	// Only refresh the AZ ID map if we have never been able to build one.
-	// Prometheus requires a reload if AWS adds a new AZ to the region.
-	if d.azToAZID == nil {
-		if err := d.refreshAZIDs(ctx); err != nil {
-			level.Debug(d.logger).Log(
-				"msg", "Unable to describe availability zones",
-				"err", err)
-		}
-	}
-
 	input := &ec2.DescribeInstancesInput{Filters: filters}
+
 	if err := ec2Client.DescribeInstancesPagesWithContext(ctx, input, func(p *ec2.DescribeInstancesOutput, lastPage bool) bool {
 		for _, r := range p.Reservations {
 			for _, inst := range r.Instances {
 				if inst.PrivateIpAddress == nil {
 					continue
 				}
-
 				labels := model.LabelSet{
 					ec2LabelInstanceID: model.LabelValue(*inst.InstanceId),
-					ec2LabelRegion:     model.LabelValue(d.cfg.Region),
 				}
 
 				if r.OwnerId != nil {
@@ -265,15 +234,9 @@ func (d *EC2Discovery) refresh(ctx context.Context) ([]*targetgroup.Group, error
 					labels[ec2LabelPublicIP] = model.LabelValue(*inst.PublicIpAddress)
 					labels[ec2LabelPublicDNS] = model.LabelValue(*inst.PublicDnsName)
 				}
+
 				labels[ec2LabelAMI] = model.LabelValue(*inst.ImageId)
 				labels[ec2LabelAZ] = model.LabelValue(*inst.Placement.AvailabilityZone)
-				azID, ok := d.azToAZID[*inst.Placement.AvailabilityZone]
-				if !ok && d.azToAZID != nil {
-					level.Debug(d.logger).Log(
-						"msg", "Availability zone ID not found",
-						"az", *inst.Placement.AvailabilityZone)
-				}
-				labels[ec2LabelAZID] = model.LabelValue(azID)
 				labels[ec2LabelInstanceState] = model.LabelValue(*inst.State.Name)
 				labels[ec2LabelInstanceType] = model.LabelValue(*inst.InstanceType)
 
@@ -330,11 +293,10 @@ func (d *EC2Discovery) refresh(ctx context.Context) ([]*targetgroup.Group, error
 		}
 		return true
 	}); err != nil {
-		var awsErr awserr.Error
-		if errors.As(err, &awsErr) && (awsErr.Code() == "AuthFailure" || awsErr.Code() == "UnauthorizedOperation") {
+		if awsErr, ok := err.(awserr.Error); ok && (awsErr.Code() == "AuthFailure" || awsErr.Code() == "UnauthorizedOperation") {
 			d.ec2 = nil
 		}
-		return nil, fmt.Errorf("could not describe instances: %w", err)
+		return nil, errors.Wrap(err, "could not describe instances")
 	}
 	return []*targetgroup.Group{tg}, nil
 }

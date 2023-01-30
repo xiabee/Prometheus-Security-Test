@@ -23,27 +23,26 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unsafe"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
-	"github.com/grafana/regexp"
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/route"
-	"golang.org/x/exp/slices"
 
 	"github.com/prometheus/prometheus/config"
-	"github.com/prometheus/prometheus/model/exemplar"
-	"github.com/prometheus/prometheus/model/histogram"
-	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/model/textparse"
-	"github.com/prometheus/prometheus/model/timestamp"
+	"github.com/prometheus/prometheus/pkg/exemplar"
+	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/pkg/textparse"
+	"github.com/prometheus/prometheus/pkg/timestamp"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/prometheus/prometheus/rules"
@@ -53,7 +52,6 @@ import (
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/index"
 	"github.com/prometheus/prometheus/util/httputil"
-	"github.com/prometheus/prometheus/util/jsonutil"
 	"github.com/prometheus/prometheus/util/stats"
 )
 
@@ -77,7 +75,9 @@ const (
 	errorNotFound    errorType = "not_found"
 )
 
-var LocalhostRepresentations = []string{"127.0.0.1", "localhost", "::1"}
+var (
+	LocalhostRepresentations = []string{"127.0.0.1", "localhost", "::1"}
+)
 
 type apiError struct {
 	typ errorType
@@ -104,15 +104,6 @@ type AlertmanagerRetriever interface {
 type RulesRetriever interface {
 	RuleGroups() []*rules.Group
 	AlertingRules() []*rules.AlertingRule
-}
-
-type StatsRenderer func(context.Context, *stats.Statistics, string) stats.QueryStats
-
-func defaultStatsRenderer(ctx context.Context, s *stats.Statistics, param string) stats.QueryStats {
-	if param != "" {
-		return stats.NewQueryStats(s)
-	}
-	return nil
 }
 
 // PrometheusVersion contains build information about Prometheus.
@@ -161,22 +152,15 @@ type TSDBAdminStats interface {
 	CleanTombstones() error
 	Delete(mint, maxt int64, ms ...*labels.Matcher) error
 	Snapshot(dir string, withHead bool) error
-	Stats(statsByLabelName string) (*tsdb.Stats, error)
-	WALReplayStatus() (tsdb.WALReplayStatus, error)
-}
 
-// QueryEngine defines the interface for the *promql.Engine, so it can be replaced, wrapped or mocked.
-type QueryEngine interface {
-	SetQueryLogger(l promql.QueryLogger)
-	NewInstantQuery(q storage.Queryable, opts *promql.QueryOpts, qs string, ts time.Time) (promql.Query, error)
-	NewRangeQuery(q storage.Queryable, opts *promql.QueryOpts, qs string, start, end time.Time, interval time.Duration) (promql.Query, error)
+	Stats(statsByLabelName string) (*tsdb.Stats, error)
 }
 
 // API can register a set of endpoints in a router and handle
 // them using the provided storage and query engine.
 type API struct {
 	Queryable         storage.SampleAndChunkQueryable
-	QueryEngine       QueryEngine
+	QueryEngine       *promql.Engine
 	ExemplarQueryable storage.ExemplarQueryable
 
 	targetRetriever       func(context.Context) TargetRetriever
@@ -188,31 +172,27 @@ type API struct {
 	ready                 func(http.HandlerFunc) http.HandlerFunc
 	globalURLOptions      GlobalURLOptions
 
-	db            TSDBAdminStats
-	dbDir         string
-	enableAdmin   bool
-	logger        log.Logger
-	CORSOrigin    *regexp.Regexp
-	buildInfo     *PrometheusVersion
-	runtimeInfo   func() (RuntimeInfo, error)
-	gatherer      prometheus.Gatherer
-	isAgent       bool
-	statsRenderer StatsRenderer
+	db          TSDBAdminStats
+	dbDir       string
+	enableAdmin bool
+	logger      log.Logger
+	CORSOrigin  *regexp.Regexp
+	buildInfo   *PrometheusVersion
+	runtimeInfo func() (RuntimeInfo, error)
+	gatherer    prometheus.Gatherer
 
 	remoteWriteHandler http.Handler
 	remoteReadHandler  http.Handler
 }
 
 func init() {
-	jsoniter.RegisterTypeEncoderFunc("promql.Series", marshalSeriesJSON, marshalSeriesJSONIsEmpty)
-	jsoniter.RegisterTypeEncoderFunc("promql.Sample", marshalSampleJSON, marshalSampleJSONIsEmpty)
 	jsoniter.RegisterTypeEncoderFunc("promql.Point", marshalPointJSON, marshalPointJSONIsEmpty)
 	jsoniter.RegisterTypeEncoderFunc("exemplar.Exemplar", marshalExemplarJSON, marshalExemplarJSONEmpty)
 }
 
 // NewAPI returns an initialized API type.
 func NewAPI(
-	qe QueryEngine,
+	qe *promql.Engine,
 	q storage.SampleAndChunkQueryable,
 	ap storage.Appendable,
 	eq storage.ExemplarQueryable,
@@ -230,13 +210,11 @@ func NewAPI(
 	remoteReadSampleLimit int,
 	remoteReadConcurrencyLimit int,
 	remoteReadMaxBytesInFrame int,
-	isAgent bool,
 	CORSOrigin *regexp.Regexp,
 	runtimeInfo func() (RuntimeInfo, error),
 	buildInfo *PrometheusVersion,
 	gatherer prometheus.Gatherer,
 	registerer prometheus.Registerer,
-	statsRenderer StatsRenderer,
 ) *API {
 	a := &API{
 		QueryEngine:       qe,
@@ -260,14 +238,8 @@ func NewAPI(
 		runtimeInfo:      runtimeInfo,
 		buildInfo:        buildInfo,
 		gatherer:         gatherer,
-		isAgent:          isAgent,
-		statsRenderer:    defaultStatsRenderer,
 
 		remoteReadHandler: remote.NewReadHandler(logger, registerer, q, configFunc, remoteReadSampleLimit, remoteReadConcurrencyLimit, remoteReadMaxBytesInFrame),
-	}
-
-	if statsRenderer != nil {
-		a.statsRenderer = statsRenderer
 	}
 
 	if ap != nil {
@@ -309,38 +281,26 @@ func (api *API) Register(r *route.Router) {
 		}.ServeHTTP)
 	}
 
-	wrapAgent := func(f apiFunc) http.HandlerFunc {
-		return wrap(func(r *http.Request) apiFuncResult {
-			if api.isAgent {
-				return apiFuncResult{nil, &apiError{errorExec, errors.New("unavailable with Prometheus Agent")}, nil, nil}
-			}
-			return f(r)
-		})
-	}
-
 	r.Options("/*path", wrap(api.options))
 
-	r.Get("/query", wrapAgent(api.query))
-	r.Post("/query", wrapAgent(api.query))
-	r.Get("/query_range", wrapAgent(api.queryRange))
-	r.Post("/query_range", wrapAgent(api.queryRange))
-	r.Get("/query_exemplars", wrapAgent(api.queryExemplars))
-	r.Post("/query_exemplars", wrapAgent(api.queryExemplars))
+	r.Get("/query", wrap(api.query))
+	r.Post("/query", wrap(api.query))
+	r.Get("/query_range", wrap(api.queryRange))
+	r.Post("/query_range", wrap(api.queryRange))
+	r.Get("/query_exemplars", wrap(api.queryExemplars))
+	r.Post("/query_exemplars", wrap(api.queryExemplars))
 
-	r.Get("/format_query", wrapAgent(api.formatQuery))
-	r.Post("/format_query", wrapAgent(api.formatQuery))
+	r.Get("/labels", wrap(api.labelNames))
+	r.Post("/labels", wrap(api.labelNames))
+	r.Get("/label/:name/values", wrap(api.labelValues))
 
-	r.Get("/labels", wrapAgent(api.labelNames))
-	r.Post("/labels", wrapAgent(api.labelNames))
-	r.Get("/label/:name/values", wrapAgent(api.labelValues))
-
-	r.Get("/series", wrapAgent(api.series))
-	r.Post("/series", wrapAgent(api.series))
-	r.Del("/series", wrapAgent(api.dropSeries))
+	r.Get("/series", wrap(api.series))
+	r.Post("/series", wrap(api.series))
+	r.Del("/series", wrap(api.dropSeries))
 
 	r.Get("/targets", wrap(api.targets))
 	r.Get("/targets/metadata", wrap(api.targetMetadata))
-	r.Get("/alertmanagers", wrapAgent(api.alertmanagers))
+	r.Get("/alertmanagers", wrap(api.alertmanagers))
 
 	r.Get("/metadata", wrap(api.metricMetadata))
 
@@ -348,28 +308,27 @@ func (api *API) Register(r *route.Router) {
 	r.Get("/status/runtimeinfo", wrap(api.serveRuntimeInfo))
 	r.Get("/status/buildinfo", wrap(api.serveBuildInfo))
 	r.Get("/status/flags", wrap(api.serveFlags))
-	r.Get("/status/tsdb", wrapAgent(api.serveTSDBStatus))
-	r.Get("/status/walreplay", api.serveWALReplayStatus)
-	r.Post("/read", api.ready(api.remoteRead))
-	r.Post("/write", api.ready(api.remoteWrite))
+	r.Get("/status/tsdb", wrap(api.serveTSDBStatus))
+	r.Post("/read", api.ready(http.HandlerFunc(api.remoteRead)))
+	r.Post("/write", api.ready(http.HandlerFunc(api.remoteWrite)))
 
-	r.Get("/alerts", wrapAgent(api.alerts))
-	r.Get("/rules", wrapAgent(api.rules))
+	r.Get("/alerts", wrap(api.alerts))
+	r.Get("/rules", wrap(api.rules))
 
 	// Admin APIs
-	r.Post("/admin/tsdb/delete_series", wrapAgent(api.deleteSeries))
-	r.Post("/admin/tsdb/clean_tombstones", wrapAgent(api.cleanTombstones))
-	r.Post("/admin/tsdb/snapshot", wrapAgent(api.snapshot))
+	r.Post("/admin/tsdb/delete_series", wrap(api.deleteSeries))
+	r.Post("/admin/tsdb/clean_tombstones", wrap(api.cleanTombstones))
+	r.Post("/admin/tsdb/snapshot", wrap(api.snapshot))
 
-	r.Put("/admin/tsdb/delete_series", wrapAgent(api.deleteSeries))
-	r.Put("/admin/tsdb/clean_tombstones", wrapAgent(api.cleanTombstones))
-	r.Put("/admin/tsdb/snapshot", wrapAgent(api.snapshot))
+	r.Put("/admin/tsdb/delete_series", wrap(api.deleteSeries))
+	r.Put("/admin/tsdb/clean_tombstones", wrap(api.cleanTombstones))
+	r.Put("/admin/tsdb/snapshot", wrap(api.snapshot))
 }
 
 type queryData struct {
-	ResultType parser.ValueType `json:"resultType"`
-	Result     parser.Value     `json:"result"`
-	Stats      stats.QueryStats `json:"stats,omitempty"`
+	ResultType parser.ValueType  `json:"resultType"`
+	Result     parser.Value      `json:"result"`
+	Stats      *stats.QueryStats `json:"stats,omitempty"`
 }
 
 func invalidParamError(err error, parameter string) apiFuncResult {
@@ -399,8 +358,12 @@ func (api *API) query(r *http.Request) (result apiFuncResult) {
 		defer cancel()
 	}
 
-	opts := extractQueryOpts(r)
-	qry, err := api.QueryEngine.NewInstantQuery(api.Queryable, opts, r.FormValue("query"), ts)
+	qry, err := api.QueryEngine.NewInstantQuery(api.Queryable, r.FormValue("query"), ts)
+	if err == promql.ErrValidationAtModifierDisabled {
+		err = errors.New("@ modifier is disabled, use --enable-feature=promql-at-modifier to enable it")
+	} else if err == promql.ErrValidationNegativeOffsetDisabled {
+		err = errors.New("negative offset is disabled, use --enable-feature=promql-negative-offset to enable it")
+	}
 	if err != nil {
 		return invalidParamError(err, "query")
 	}
@@ -422,32 +385,16 @@ func (api *API) query(r *http.Request) (result apiFuncResult) {
 	}
 
 	// Optional stats field in response if parameter "stats" is not empty.
-	sr := api.statsRenderer
-	if sr == nil {
-		sr = defaultStatsRenderer
+	var qs *stats.QueryStats
+	if r.FormValue("stats") != "" {
+		qs = stats.NewQueryStats(qry.Stats())
 	}
-	qs := sr(ctx, qry.Stats(), r.FormValue("stats"))
 
 	return apiFuncResult{&queryData{
 		ResultType: res.Value.Type(),
 		Result:     res.Value,
 		Stats:      qs,
 	}, nil, res.Warnings, qry.Close}
-}
-
-func (api *API) formatQuery(r *http.Request) (result apiFuncResult) {
-	expr, err := parser.ParseExpr(r.FormValue("query"))
-	if err != nil {
-		return invalidParamError(err, "query")
-	}
-
-	return apiFuncResult{expr.Pretty(0), nil, nil, nil}
-}
-
-func extractQueryOpts(r *http.Request) *promql.QueryOpts {
-	return &promql.QueryOpts{
-		EnablePerStepStats: r.FormValue("stats") == "all",
-	}
 }
 
 func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
@@ -491,8 +438,12 @@ func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
 		defer cancel()
 	}
 
-	opts := extractQueryOpts(r)
-	qry, err := api.QueryEngine.NewRangeQuery(api.Queryable, opts, r.FormValue("query"), start, end, step)
+	qry, err := api.QueryEngine.NewRangeQuery(api.Queryable, r.FormValue("query"), start, end, step)
+	if err == promql.ErrValidationAtModifierDisabled {
+		err = errors.New("@ modifier is disabled, use --enable-feature=promql-at-modifier to enable it")
+	} else if err == promql.ErrValidationNegativeOffsetDisabled {
+		err = errors.New("negative offset is disabled, use --enable-feature=promql-negative-offset to enable it")
+	}
 	if err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, err}, nil, nil}
 	}
@@ -513,11 +464,10 @@ func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
 	}
 
 	// Optional stats field in response if parameter "stats" is not empty.
-	sr := api.statsRenderer
-	if sr == nil {
-		sr = defaultStatsRenderer
+	var qs *stats.QueryStats
+	if r.FormValue("stats") != "" {
+		qs = stats.NewQueryStats(qry.Stats())
 	}
-	qs := sr(ctx, qry.Stats(), r.FormValue("stats"))
 
 	return apiFuncResult{&queryData{
 		ResultType: res.Value.Type(),
@@ -553,12 +503,12 @@ func (api *API) queryExemplars(r *http.Request) apiFuncResult {
 	ctx := r.Context()
 	eq, err := api.ExemplarQueryable.ExemplarQuerier(ctx)
 	if err != nil {
-		return apiFuncResult{nil, returnAPIError(err), nil, nil}
+		return apiFuncResult{nil, &apiError{errorExec, err}, nil, nil}
 	}
 
 	res, err := eq.Select(timestamp.FromTime(start), timestamp.FromTime(end), selectors...)
 	if err != nil {
-		return apiFuncResult{nil, returnAPIError(err), nil, nil}
+		return apiFuncResult{nil, &apiError{errorExec, err}, nil, nil}
 	}
 
 	return apiFuncResult{res, nil, nil, nil}
@@ -569,12 +519,7 @@ func returnAPIError(err error) *apiError {
 		return nil
 	}
 
-	cause := errors.Unwrap(err)
-	if cause == nil {
-		cause = err
-	}
-
-	switch cause.(type) {
+	switch errors.Cause(err).(type) {
 	case promql.ErrQueryCanceled:
 		return &apiError{errorCanceled, err}
 	case promql.ErrQueryTimeout:
@@ -603,7 +548,7 @@ func (api *API) labelNames(r *http.Request) apiFuncResult {
 
 	q, err := api.Queryable.Querier(r.Context(), timestamp.FromTime(start), timestamp.FromTime(end))
 	if err != nil {
-		return apiFuncResult{nil, returnAPIError(err), nil, nil}
+		return apiFuncResult{nil, &apiError{errorExec, err}, nil, nil}
 	}
 	defer q.Close()
 
@@ -612,17 +557,25 @@ func (api *API) labelNames(r *http.Request) apiFuncResult {
 		warnings storage.Warnings
 	)
 	if len(matcherSets) > 0 {
+		hints := &storage.SelectHints{
+			Start: timestamp.FromTime(start),
+			End:   timestamp.FromTime(end),
+			Func:  "series", // There is no series function, this token is used for lookups that don't need samples.
+		}
+
 		labelNamesSet := make(map[string]struct{})
-
-		for _, matchers := range matcherSets {
-			vals, callWarnings, err := q.LabelNames(matchers...)
-			if err != nil {
-				return apiFuncResult{nil, returnAPIError(err), warnings, nil}
+		// Get all series which match matchers.
+		for _, mset := range matcherSets {
+			s := q.Select(false, hints, mset...)
+			for s.Next() {
+				series := s.At()
+				for _, lb := range series.Labels() {
+					labelNamesSet[lb.Name] = struct{}{}
+				}
 			}
-
-			warnings = append(warnings, callWarnings...)
-			for _, val := range vals {
-				labelNamesSet[val] = struct{}{}
+			warnings = append(warnings, s.Warnings()...)
+			if err := s.Err(); err != nil {
+				return apiFuncResult{nil, &apiError{errorExec, err}, warnings, nil}
 			}
 		}
 
@@ -631,7 +584,7 @@ func (api *API) labelNames(r *http.Request) apiFuncResult {
 		for key := range labelNamesSet {
 			names = append(names, key)
 		}
-		slices.Sort(names)
+		sort.Strings(names)
 	} else {
 		names, warnings, err = q.LabelNames()
 		if err != nil {
@@ -716,7 +669,7 @@ func (api *API) labelValues(r *http.Request) (result apiFuncResult) {
 		}
 	}
 
-	slices.Sort(vals)
+	sort.Strings(vals)
 
 	return apiFuncResult{vals, nil, warnings, closer}
 }
@@ -753,7 +706,7 @@ func (api *API) series(r *http.Request) (result apiFuncResult) {
 
 	q, err := api.Queryable.Querier(r.Context(), timestamp.FromTime(start), timestamp.FromTime(end))
 	if err != nil {
-		return apiFuncResult{nil, returnAPIError(err), nil, nil}
+		return apiFuncResult{nil, &apiError{errorExec, err}, nil, nil}
 	}
 	// From now on, we must only return with a finalizer in the result (to
 	// be called by the caller) or call q.Close ourselves (which is required
@@ -772,21 +725,15 @@ func (api *API) series(r *http.Request) (result apiFuncResult) {
 		End:   timestamp.FromTime(end),
 		Func:  "series", // There is no series function, this token is used for lookups that don't need samples.
 	}
-	var set storage.SeriesSet
 
-	if len(matcherSets) > 1 {
-		var sets []storage.SeriesSet
-		for _, mset := range matcherSets {
-			// We need to sort this select results to merge (deduplicate) the series sets later.
-			s := q.Select(true, hints, mset...)
-			sets = append(sets, s)
-		}
-		set = storage.NewMergeSeriesSet(sets, storage.ChainedSeriesMerge)
-	} else {
-		// At this point at least one match exists.
-		set = q.Select(false, hints, matcherSets[0]...)
+	var sets []storage.SeriesSet
+	for _, mset := range matcherSets {
+		// We need to sort this select results to merge (deduplicate) the series sets later.
+		s := q.Select(true, hints, mset...)
+		sets = append(sets, s)
 	}
 
+	set := storage.NewMergeSeriesSet(sets, storage.ChainedSeriesMerge)
 	metrics := []labels.Labels{}
 	for set.Next() {
 		metrics = append(metrics, set.At().Labels())
@@ -794,7 +741,7 @@ func (api *API) series(r *http.Request) (result apiFuncResult) {
 
 	warnings := set.Warnings()
 	if set.Err() != nil {
-		return apiFuncResult{nil, returnAPIError(set.Err()), warnings, closer}
+		return apiFuncResult{nil, &apiError{errorExec, set.Err()}, warnings, closer}
 	}
 
 	return apiFuncResult{metrics, nil, warnings, closer}
@@ -819,9 +766,6 @@ type Target struct {
 	LastScrape         time.Time           `json:"lastScrape"`
 	LastScrapeDuration float64             `json:"lastScrapeDuration"`
 	Health             scrape.TargetHealth `json:"health"`
-
-	ScrapeInterval string `json:"scrapeInterval"`
-	ScrapeTimeout  string `json:"scrapeTimeout"`
 }
 
 // DroppedTarget has the information for one target that was dropped during relabelling.
@@ -911,7 +855,7 @@ func (api *API) targets(r *http.Request) apiFuncResult {
 			keys = append(keys, k)
 			n += len(targets[k])
 		}
-		slices.Sort(keys)
+		sort.Strings(keys)
 		return keys, n
 	}
 
@@ -961,8 +905,6 @@ func (api *API) targets(r *http.Request) apiFuncResult {
 					LastScrape:         target.LastScrape(),
 					LastScrapeDuration: target.LastScrapeDuration().Seconds(),
 					Health:             target.Health(),
-					ScrapeInterval:     target.GetValue(model.ScrapeIntervalLabel),
-					ScrapeTimeout:      target.GetValue(model.ScrapeTimeoutLabel),
 				})
 			}
 		}
@@ -1204,16 +1146,15 @@ type RuleGroup struct {
 	// In order to preserve rule ordering, while exposing type (alerting or recording)
 	// specific properties, both alerting and recording rules are exposed in the
 	// same array.
-	Rules          []Rule    `json:"rules"`
+	Rules          []rule    `json:"rules"`
 	Interval       float64   `json:"interval"`
-	Limit          int       `json:"limit"`
 	EvaluationTime float64   `json:"evaluationTime"`
 	LastEvaluation time.Time `json:"lastEvaluation"`
 }
 
-type Rule interface{}
+type rule interface{}
 
-type AlertingRule struct {
+type alertingRule struct {
 	// State can be "pending", "firing", "inactive".
 	State          string           `json:"state"`
 	Name           string           `json:"name"`
@@ -1230,7 +1171,7 @@ type AlertingRule struct {
 	Type string `json:"type"`
 }
 
-type RecordingRule struct {
+type recordingRule struct {
 	Name           string           `json:"name"`
 	Query          string           `json:"query"`
 	Labels         labels.Labels    `json:"labels,omitempty"`
@@ -1259,13 +1200,12 @@ func (api *API) rules(r *http.Request) apiFuncResult {
 			Name:           grp.Name(),
 			File:           grp.File(),
 			Interval:       grp.Interval().Seconds(),
-			Limit:          grp.Limit(),
-			Rules:          []Rule{},
+			Rules:          []rule{},
 			EvaluationTime: grp.GetEvaluationTime().Seconds(),
 			LastEvaluation: grp.GetLastEvaluation(),
 		}
 		for _, r := range grp.Rules() {
-			var enrichedRule Rule
+			var enrichedRule rule
 
 			lastError := ""
 			if r.LastError() != nil {
@@ -1276,7 +1216,7 @@ func (api *API) rules(r *http.Request) apiFuncResult {
 				if !returnAlerts {
 					break
 				}
-				enrichedRule = AlertingRule{
+				enrichedRule = alertingRule{
 					State:          rule.State().String(),
 					Name:           rule.Name(),
 					Query:          rule.Query().String(),
@@ -1294,7 +1234,7 @@ func (api *API) rules(r *http.Request) apiFuncResult {
 				if !returnRecording {
 					break
 				}
-				enrichedRule = RecordingRule{
+				enrichedRule = recordingRule{
 					Name:           rule.Name(),
 					Query:          rule.Query().String(),
 					Labels:         rule.Labels(),
@@ -1344,8 +1284,8 @@ func (api *API) serveFlags(_ *http.Request) apiFuncResult {
 	return apiFuncResult{api.flagsMap, nil, nil, nil}
 }
 
-// TSDBStat holds the information about individual cardinality.
-type TSDBStat struct {
+// stat holds the information about individual cardinality.
+type stat struct {
 	Name  string `json:"name"`
 	Value uint64 `json:"value"`
 }
@@ -1359,27 +1299,26 @@ type HeadStats struct {
 	MaxTime       int64  `json:"maxTime"`
 }
 
-// TSDBStatus has information of cardinality statistics from postings.
-type TSDBStatus struct {
-	HeadStats                   HeadStats  `json:"headStats"`
-	SeriesCountByMetricName     []TSDBStat `json:"seriesCountByMetricName"`
-	LabelValueCountByLabelName  []TSDBStat `json:"labelValueCountByLabelName"`
-	MemoryInBytesByLabelName    []TSDBStat `json:"memoryInBytesByLabelName"`
-	SeriesCountByLabelValuePair []TSDBStat `json:"seriesCountByLabelValuePair"`
+// tsdbStatus has information of cardinality statistics from postings.
+type tsdbStatus struct {
+	HeadStats                   HeadStats `json:"headStats"`
+	SeriesCountByMetricName     []stat    `json:"seriesCountByMetricName"`
+	LabelValueCountByLabelName  []stat    `json:"labelValueCountByLabelName"`
+	MemoryInBytesByLabelName    []stat    `json:"memoryInBytesByLabelName"`
+	SeriesCountByLabelValuePair []stat    `json:"seriesCountByLabelValuePair"`
 }
 
-// TSDBStatsFromIndexStats converts a index.Stat slice to a TSDBStat slice.
-func TSDBStatsFromIndexStats(stats []index.Stat) []TSDBStat {
-	result := make([]TSDBStat, 0, len(stats))
+func convertStats(stats []index.Stat) []stat {
+	result := make([]stat, 0, len(stats))
 	for _, item := range stats {
-		item := TSDBStat{Name: item.Name, Value: item.Count}
+		item := stat{Name: item.Name, Value: item.Count}
 		result = append(result, item)
 	}
 	return result
 }
 
 func (api *API) serveTSDBStatus(*http.Request) apiFuncResult {
-	s, err := api.db.Stats(labels.MetricName)
+	s, err := api.db.Stats("__name__")
 	if err != nil {
 		return apiFuncResult{nil, &apiError{errorInternal, err}, nil, nil}
 	}
@@ -1397,7 +1336,7 @@ func (api *API) serveTSDBStatus(*http.Request) apiFuncResult {
 			}
 		}
 	}
-	return apiFuncResult{TSDBStatus{
+	return apiFuncResult{tsdbStatus{
 		HeadStats: HeadStats{
 			NumSeries:     s.NumSeries,
 			ChunkCount:    chunkCount,
@@ -1405,30 +1344,11 @@ func (api *API) serveTSDBStatus(*http.Request) apiFuncResult {
 			MaxTime:       s.MaxTime,
 			NumLabelPairs: s.IndexPostingStats.NumLabelPairs,
 		},
-		SeriesCountByMetricName:     TSDBStatsFromIndexStats(s.IndexPostingStats.CardinalityMetricsStats),
-		LabelValueCountByLabelName:  TSDBStatsFromIndexStats(s.IndexPostingStats.CardinalityLabelStats),
-		MemoryInBytesByLabelName:    TSDBStatsFromIndexStats(s.IndexPostingStats.LabelValueStats),
-		SeriesCountByLabelValuePair: TSDBStatsFromIndexStats(s.IndexPostingStats.LabelValuePairsStats),
+		SeriesCountByMetricName:     convertStats(s.IndexPostingStats.CardinalityMetricsStats),
+		LabelValueCountByLabelName:  convertStats(s.IndexPostingStats.CardinalityLabelStats),
+		MemoryInBytesByLabelName:    convertStats(s.IndexPostingStats.LabelValueStats),
+		SeriesCountByLabelValuePair: convertStats(s.IndexPostingStats.LabelValuePairsStats),
 	}, nil, nil, nil}
-}
-
-type walReplayStatus struct {
-	Min     int `json:"min"`
-	Max     int `json:"max"`
-	Current int `json:"current"`
-}
-
-func (api *API) serveWALReplayStatus(w http.ResponseWriter, r *http.Request) {
-	httputil.SetCORS(w, api.CORSOrigin, r)
-	status, err := api.db.WALReplayStatus()
-	if err != nil {
-		api.respondError(w, &apiError{errorInternal, err}, nil)
-	}
-	api.respond(w, walReplayStatus{
-		Min:     status.Min,
-		Max:     status.Max,
-		Current: status.Current,
-	}, nil)
 }
 
 func (api *API) remoteRead(w http.ResponseWriter, r *http.Request) {
@@ -1503,7 +1423,7 @@ func (api *API) snapshot(r *http.Request) apiFuncResult {
 			rand.Int63())
 		dir = filepath.Join(snapdir, name)
 	)
-	if err := os.MkdirAll(dir, 0o777); err != nil {
+	if err := os.MkdirAll(dir, 0777); err != nil {
 		return apiFuncResult{nil, &apiError{errorInternal, errors.Wrap(err, "create snapshot directory")}, nil, nil}
 	}
 	if err := api.db.Snapshot(dir, !skipHead); err != nil {
@@ -1559,6 +1479,7 @@ func (api *API) respondError(w http.ResponseWriter, apiErr *apiError, data inter
 		Error:     apiErr.err.Error(),
 		Data:      data,
 	})
+
 	if err != nil {
 		level.Error(api.logger).Log("msg", "error marshaling json response", "err", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1659,134 +1580,13 @@ OUTER:
 	return matcherSets, nil
 }
 
-// marshalSeriesJSON writes something like the following:
-//
-//	{
-//	   "metric" : {
-//	      "__name__" : "up",
-//	      "job" : "prometheus",
-//	      "instance" : "localhost:9090"
-//	   },
-//	   "values": [
-//	      [ 1435781451.781, "1" ],
-//	      < more values>
-//	   ],
-//	   "histograms": [
-//	      [ 1435781451.781, { < histogram, see below > } ],
-//	      < more histograms >
-//	   ],
-//	},
-func marshalSeriesJSON(ptr unsafe.Pointer, stream *jsoniter.Stream) {
-	s := *((*promql.Series)(ptr))
-	stream.WriteObjectStart()
-	stream.WriteObjectField(`metric`)
-	m, err := s.Metric.MarshalJSON()
-	if err != nil {
-		stream.Error = err
-		return
-	}
-	stream.SetBuffer(append(stream.Buffer(), m...))
-
-	// We make two passes through the series here: In the first marshaling
-	// all value points, in the second marshaling all histogram
-	// points. That's probably cheaper than just one pass in which we copy
-	// out histogram Points into a newly allocated slice for separate
-	// marshaling. (Could be benchmarked, though.)
-	var foundValue, foundHistogram bool
-	for _, p := range s.Points {
-		if p.H == nil {
-			stream.WriteMore()
-			if !foundValue {
-				stream.WriteObjectField(`values`)
-				stream.WriteArrayStart()
-			}
-			foundValue = true
-			marshalPointJSON(unsafe.Pointer(&p), stream)
-		} else {
-			foundHistogram = true
-		}
-	}
-	if foundValue {
-		stream.WriteArrayEnd()
-	}
-	if foundHistogram {
-		firstHistogram := true
-		for _, p := range s.Points {
-			if p.H != nil {
-				stream.WriteMore()
-				if firstHistogram {
-					stream.WriteObjectField(`histograms`)
-					stream.WriteArrayStart()
-				}
-				firstHistogram = false
-				marshalPointJSON(unsafe.Pointer(&p), stream)
-			}
-		}
-		stream.WriteArrayEnd()
-	}
-	stream.WriteObjectEnd()
-}
-
-func marshalSeriesJSONIsEmpty(ptr unsafe.Pointer) bool {
-	return false
-}
-
-// marshalSampleJSON writes something like the following for normal value samples:
-//
-//	{
-//	   "metric" : {
-//	      "__name__" : "up",
-//	      "job" : "prometheus",
-//	      "instance" : "localhost:9090"
-//	   },
-//	   "value": [ 1435781451.781, "1" ]
-//	},
-//
-// For histogram samples, it writes something like this:
-//
-//	{
-//	   "metric" : {
-//	      "__name__" : "up",
-//	      "job" : "prometheus",
-//	      "instance" : "localhost:9090"
-//	   },
-//	   "histogram": [ 1435781451.781, { < histogram, see below > } ]
-//	},
-func marshalSampleJSON(ptr unsafe.Pointer, stream *jsoniter.Stream) {
-	s := *((*promql.Sample)(ptr))
-	stream.WriteObjectStart()
-	stream.WriteObjectField(`metric`)
-	m, err := s.Metric.MarshalJSON()
-	if err != nil {
-		stream.Error = err
-		return
-	}
-	stream.SetBuffer(append(stream.Buffer(), m...))
-	stream.WriteMore()
-	if s.Point.H == nil {
-		stream.WriteObjectField(`value`)
-	} else {
-		stream.WriteObjectField(`histogram`)
-	}
-	marshalPointJSON(unsafe.Pointer(&s.Point), stream)
-	stream.WriteObjectEnd()
-}
-
-func marshalSampleJSONIsEmpty(ptr unsafe.Pointer) bool {
-	return false
-}
-
 // marshalPointJSON writes `[ts, "val"]`.
 func marshalPointJSON(ptr unsafe.Pointer, stream *jsoniter.Stream) {
 	p := *((*promql.Point)(ptr))
 	stream.WriteArrayStart()
-	jsonutil.MarshalTimestamp(p.T, stream)
+	marshalTimestamp(p.T, stream)
 	stream.WriteMore()
-	if p.H == nil {
-		jsonutil.MarshalValue(p.V, stream)
-	} else {
-		marshalHistogram(p.H, stream)
-	}
+	marshalValue(p.V, stream)
 	stream.WriteArrayEnd()
 }
 
@@ -1794,85 +1594,12 @@ func marshalPointJSONIsEmpty(ptr unsafe.Pointer) bool {
 	return false
 }
 
-// marshalHistogramJSON writes something like:
-//
-//	{
-//	    "count": "42",
-//	    "sum": "34593.34",
-//	    "buckets": [
-//	      [ 3, "-0.25", "0.25", "3"],
-//	      [ 0, "0.25", "0.5", "12"],
-//	      [ 0, "0.5", "1", "21"],
-//	      [ 0, "2", "4", "6"]
-//	    ]
-//	}
-//
-// The 1st element in each bucket array determines if the boundaries are
-// inclusive (AKA closed) or exclusive (AKA open):
-//
-//	0: lower exclusive, upper inclusive
-//	1: lower inclusive, upper exclusive
-//	2: both exclusive
-//	3: both inclusive
-//
-// The 2nd and 3rd elements are the lower and upper boundary. The 4th element is
-// the bucket count.
-func marshalHistogram(h *histogram.FloatHistogram, stream *jsoniter.Stream) {
-	stream.WriteObjectStart()
-	stream.WriteObjectField(`count`)
-	jsonutil.MarshalValue(h.Count, stream)
-	stream.WriteMore()
-	stream.WriteObjectField(`sum`)
-	jsonutil.MarshalValue(h.Sum, stream)
-
-	bucketFound := false
-	it := h.AllBucketIterator()
-	for it.Next() {
-		bucket := it.At()
-		if bucket.Count == 0 {
-			continue // No need to expose empty buckets in JSON.
-		}
-		stream.WriteMore()
-		if !bucketFound {
-			stream.WriteObjectField(`buckets`)
-			stream.WriteArrayStart()
-		}
-		bucketFound = true
-		boundaries := 2 // Exclusive on both sides AKA open interval.
-		if bucket.LowerInclusive {
-			if bucket.UpperInclusive {
-				boundaries = 3 // Inclusive on both sides AKA closed interval.
-			} else {
-				boundaries = 1 // Inclusive only on lower end AKA right open.
-			}
-		} else {
-			if bucket.UpperInclusive {
-				boundaries = 0 // Inclusive only on upper end AKA left open.
-			}
-		}
-		stream.WriteArrayStart()
-		stream.WriteInt(boundaries)
-		stream.WriteMore()
-		jsonutil.MarshalValue(bucket.Lower, stream)
-		stream.WriteMore()
-		jsonutil.MarshalValue(bucket.Upper, stream)
-		stream.WriteMore()
-		jsonutil.MarshalValue(bucket.Count, stream)
-		stream.WriteArrayEnd()
-	}
-	if bucketFound {
-		stream.WriteArrayEnd()
-	}
-	stream.WriteObjectEnd()
-}
-
 // marshalExemplarJSON writes.
-//
-//	{
-//	   labels: <labels>,
-//	   value: "<string>",
-//	   timestamp: <float>
-//	}
+// {
+//    labels: <labels>,
+//    value: "<string>",
+//    timestamp: <float>
+// }
 func marshalExemplarJSON(ptr unsafe.Pointer, stream *jsoniter.Stream) {
 	p := *((*exemplar.Exemplar)(ptr))
 	stream.WriteObjectStart()
@@ -1889,16 +1616,56 @@ func marshalExemplarJSON(ptr unsafe.Pointer, stream *jsoniter.Stream) {
 	// "value" key.
 	stream.WriteMore()
 	stream.WriteObjectField(`value`)
-	jsonutil.MarshalValue(p.Value, stream)
+	marshalValue(p.Value, stream)
 
 	// "timestamp" key.
 	stream.WriteMore()
 	stream.WriteObjectField(`timestamp`)
-	jsonutil.MarshalTimestamp(p.Ts, stream)
+	marshalTimestamp(p.Ts, stream)
+	//marshalTimestamp(p.Ts, stream)
 
 	stream.WriteObjectEnd()
 }
 
 func marshalExemplarJSONEmpty(ptr unsafe.Pointer) bool {
 	return false
+}
+
+func marshalTimestamp(t int64, stream *jsoniter.Stream) {
+	// Write out the timestamp as a float divided by 1000.
+	// This is ~3x faster than converting to a float.
+	if t < 0 {
+		stream.WriteRaw(`-`)
+		t = -t
+	}
+	stream.WriteInt64(t / 1000)
+	fraction := t % 1000
+	if fraction != 0 {
+		stream.WriteRaw(`.`)
+		if fraction < 100 {
+			stream.WriteRaw(`0`)
+		}
+		if fraction < 10 {
+			stream.WriteRaw(`0`)
+		}
+		stream.WriteInt64(fraction)
+	}
+}
+
+func marshalValue(v float64, stream *jsoniter.Stream) {
+	stream.WriteRaw(`"`)
+	// Taken from https://github.com/json-iterator/go/blob/master/stream_float.go#L71 as a workaround
+	// to https://github.com/json-iterator/go/issues/365 (jsoniter, to follow json standard, doesn't allow inf/nan).
+	buf := stream.Buffer()
+	abs := math.Abs(v)
+	fmt := byte('f')
+	// Note: Must use float32 comparisons for underlying float32 value to get precise cutoffs right.
+	if abs != 0 {
+		if abs < 1e-6 || abs >= 1e21 {
+			fmt = 'e'
+		}
+	}
+	buf = strconv.AppendFloat(buf, v, fmt, -1, 64)
+	stream.SetBuffer(buf)
+	stream.WriteRaw(`"`)
 }

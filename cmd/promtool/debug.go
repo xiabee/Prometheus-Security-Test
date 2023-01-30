@@ -15,8 +15,10 @@ package main
 
 import (
 	"fmt"
-	"io"
+	"io/ioutil"
 	"net/http"
+
+	"github.com/pkg/errors"
 )
 
 type debugWriterConfig struct {
@@ -28,7 +30,7 @@ type debugWriterConfig struct {
 func debugWrite(cfg debugWriterConfig) error {
 	archiver, err := newTarGzFileWriter(cfg.tarballName)
 	if err != nil {
-		return fmt.Errorf("error creating a new archiver: %w", err)
+		return errors.Wrap(err, "error creating a new archiver")
 	}
 
 	for _, endPointGroup := range cfg.endPointGroups {
@@ -37,28 +39,29 @@ func debugWrite(cfg debugWriterConfig) error {
 			fmt.Println("collecting:", url)
 			res, err := http.Get(url)
 			if err != nil {
-				return fmt.Errorf("error executing HTTP request: %w", err)
+				return errors.Wrap(err, "error executing HTTP request")
 			}
-			body, err := io.ReadAll(res.Body)
+			body, err := ioutil.ReadAll(res.Body)
 			res.Body.Close()
 			if err != nil {
-				return fmt.Errorf("error reading the response body: %w", err)
+				return errors.Wrap(err, "error reading the response body")
 			}
 
 			if endPointGroup.postProcess != nil {
 				body, err = endPointGroup.postProcess(body)
 				if err != nil {
-					return fmt.Errorf("error post-processing HTTP response body: %w", err)
+					return errors.Wrap(err, "error post-processing HTTP response body")
 				}
 			}
 			if err := archiver.write(filename, body); err != nil {
-				return fmt.Errorf("error writing into the archive: %w", err)
+				return errors.Wrap(err, "error writing into the archive")
 			}
 		}
+
 	}
 
 	if err := archiver.close(); err != nil {
-		return fmt.Errorf("error closing archive writer: %w", err)
+		return errors.Wrap(err, "error closing archive writer")
 	}
 
 	fmt.Printf("Compiling debug information complete, all files written in %q.\n", cfg.tarballName)

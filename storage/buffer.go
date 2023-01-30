@@ -14,10 +14,8 @@
 package storage
 
 import (
-	"fmt"
 	"math"
 
-	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 )
 
@@ -27,8 +25,8 @@ type BufferedSeriesIterator struct {
 	buf   *sampleRing
 	delta int64
 
-	lastTime  int64
-	valueType chunkenc.ValueType
+	lastTime int64
+	ok       bool
 }
 
 // NewBuffer returns a new iterator that buffers the values within the time range
@@ -41,7 +39,6 @@ func NewBuffer(delta int64) *BufferedSeriesIterator {
 // NewBufferIterator returns a new iterator that buffers the values within the
 // time range of the current element and the duration of delta before.
 func NewBufferIterator(it chunkenc.Iterator, delta int64) *BufferedSeriesIterator {
-	// TODO(codesome): based on encoding, allocate different buffer.
 	bit := &BufferedSeriesIterator{
 		buf:   newSampleRing(delta, 16),
 		delta: delta,
@@ -56,9 +53,10 @@ func NewBufferIterator(it chunkenc.Iterator, delta int64) *BufferedSeriesIterato
 func (b *BufferedSeriesIterator) Reset(it chunkenc.Iterator) {
 	b.it = it
 	b.lastTime = math.MinInt64
+	b.ok = true
 	b.buf.reset()
 	b.buf.delta = b.delta
-	b.valueType = it.Next()
+	it.Next()
 }
 
 // ReduceDelta lowers the buffered time delta, for the current SeriesIterator only.
@@ -68,9 +66,8 @@ func (b *BufferedSeriesIterator) ReduceDelta(delta int64) bool {
 
 // PeekBack returns the nth previous element of the iterator. If there is none buffered,
 // ok is false.
-func (b *BufferedSeriesIterator) PeekBack(n int) (t int64, v float64, h *histogram.Histogram, ok bool) {
-	s, ok := b.buf.nthLast(n)
-	return s.t, s.v, s.h, ok
+func (b *BufferedSeriesIterator) PeekBack(n int) (t int64, v float64, ok bool) {
+	return b.buf.nthLast(n)
 }
 
 // Buffer returns an iterator over the buffered data. Invalidates previously
@@ -80,83 +77,53 @@ func (b *BufferedSeriesIterator) Buffer() chunkenc.Iterator {
 }
 
 // Seek advances the iterator to the element at time t or greater.
-func (b *BufferedSeriesIterator) Seek(t int64) chunkenc.ValueType {
+func (b *BufferedSeriesIterator) Seek(t int64) bool {
 	t0 := t - b.buf.delta
 
 	// If the delta would cause us to seek backwards, preserve the buffer
 	// and just continue regular advancement while filling the buffer on the way.
-	if b.valueType != chunkenc.ValNone && t0 > b.lastTime {
+	if t0 > b.lastTime {
 		b.buf.reset()
 
-		b.valueType = b.it.Seek(t0)
-		switch b.valueType {
-		case chunkenc.ValNone:
-			return chunkenc.ValNone
-		case chunkenc.ValFloat:
-			b.lastTime, _ = b.At()
-		case chunkenc.ValHistogram:
-			b.lastTime, _ = b.AtHistogram()
-		case chunkenc.ValFloatHistogram:
-			b.lastTime, _ = b.AtFloatHistogram()
-		default:
-			panic(fmt.Errorf("BufferedSeriesIterator: unknown value type %v", b.valueType))
+		b.ok = b.it.Seek(t0)
+		if !b.ok {
+			return false
 		}
+		b.lastTime, _ = b.Values()
 	}
 
 	if b.lastTime >= t {
-		return b.valueType
+		return true
 	}
-	for {
-		if b.valueType = b.Next(); b.valueType == chunkenc.ValNone || b.lastTime >= t {
-			return b.valueType
+	for b.Next() {
+		if b.lastTime >= t {
+			return true
 		}
 	}
+
+	return false
 }
 
 // Next advances the iterator to the next element.
-func (b *BufferedSeriesIterator) Next() chunkenc.ValueType {
+func (b *BufferedSeriesIterator) Next() bool {
+	if !b.ok {
+		return false
+	}
+
 	// Add current element to buffer before advancing.
-	switch b.valueType {
-	case chunkenc.ValNone:
-		return chunkenc.ValNone
-	case chunkenc.ValFloat:
-		t, v := b.it.At()
-		b.buf.add(sample{t: t, v: v})
-	case chunkenc.ValHistogram:
-		t, h := b.it.AtHistogram()
-		b.buf.add(sample{t: t, h: h})
-	case chunkenc.ValFloatHistogram:
-		t, fh := b.it.AtFloatHistogram()
-		b.buf.add(sample{t: t, fh: fh})
-	default:
-		panic(fmt.Errorf("BufferedSeriesIterator: unknown value type %v", b.valueType))
+	b.buf.add(b.it.At())
+
+	b.ok = b.it.Next()
+	if b.ok {
+		b.lastTime, _ = b.Values()
 	}
 
-	b.valueType = b.it.Next()
-	if b.valueType != chunkenc.ValNone {
-		b.lastTime = b.AtT()
-	}
-	return b.valueType
+	return b.ok
 }
 
-// At returns the current float element of the iterator.
-func (b *BufferedSeriesIterator) At() (int64, float64) {
+// Values returns the current element of the iterator.
+func (b *BufferedSeriesIterator) Values() (int64, float64) {
 	return b.it.At()
-}
-
-// AtHistogram returns the current histogram element of the iterator.
-func (b *BufferedSeriesIterator) AtHistogram() (int64, *histogram.Histogram) {
-	return b.it.AtHistogram()
-}
-
-// AtFloatHistogram returns the current float-histogram element of the iterator.
-func (b *BufferedSeriesIterator) AtFloatHistogram() (int64, *histogram.FloatHistogram) {
-	return b.it.AtFloatHistogram()
-}
-
-// AtT returns the current timestamp of the iterator.
-func (b *BufferedSeriesIterator) AtT() int64 {
-	return b.it.AtT()
 }
 
 // Err returns the last encountered error.
@@ -164,12 +131,9 @@ func (b *BufferedSeriesIterator) Err() error {
 	return b.it.Err()
 }
 
-// TODO(beorn7): Consider having different sample types for different value types.
 type sample struct {
-	t  int64
-	v  float64
-	h  *histogram.Histogram
-	fh *histogram.FloatHistogram
+	t int64
+	v float64
 }
 
 func (s sample) T() int64 {
@@ -178,25 +142,6 @@ func (s sample) T() int64 {
 
 func (s sample) V() float64 {
 	return s.v
-}
-
-func (s sample) H() *histogram.Histogram {
-	return s.h
-}
-
-func (s sample) FH() *histogram.FloatHistogram {
-	return s.fh
-}
-
-func (s sample) Type() chunkenc.ValueType {
-	switch {
-	case s.h != nil:
-		return chunkenc.ValHistogram
-	case s.fh != nil:
-		return chunkenc.ValFloatHistogram
-	default:
-		return chunkenc.ValFloat
-	}
 }
 
 type sampleRing struct {
@@ -231,36 +176,17 @@ func (r *sampleRing) iterator() chunkenc.Iterator {
 }
 
 type sampleRingIterator struct {
-	r  *sampleRing
-	i  int
-	t  int64
-	v  float64
-	h  *histogram.Histogram
-	fh *histogram.FloatHistogram
+	r *sampleRing
+	i int
 }
 
-func (it *sampleRingIterator) Next() chunkenc.ValueType {
+func (it *sampleRingIterator) Next() bool {
 	it.i++
-	if it.i >= it.r.l {
-		return chunkenc.ValNone
-	}
-	s := it.r.at(it.i)
-	it.t = s.t
-	switch {
-	case s.h != nil:
-		it.h = s.h
-		return chunkenc.ValHistogram
-	case s.fh != nil:
-		it.fh = s.fh
-		return chunkenc.ValFloatHistogram
-	default:
-		it.v = s.v
-		return chunkenc.ValFloat
-	}
+	return it.i < it.r.l
 }
 
-func (it *sampleRingIterator) Seek(int64) chunkenc.ValueType {
-	return chunkenc.ValNone
+func (it *sampleRingIterator) Seek(int64) bool {
+	return false
 }
 
 func (it *sampleRingIterator) Err() error {
@@ -268,32 +194,18 @@ func (it *sampleRingIterator) Err() error {
 }
 
 func (it *sampleRingIterator) At() (int64, float64) {
-	return it.t, it.v
+	return it.r.at(it.i)
 }
 
-func (it *sampleRingIterator) AtHistogram() (int64, *histogram.Histogram) {
-	return it.t, it.h
-}
-
-func (it *sampleRingIterator) AtFloatHistogram() (int64, *histogram.FloatHistogram) {
-	if it.fh == nil {
-		return it.t, it.h.ToFloat()
-	}
-	return it.t, it.fh
-}
-
-func (it *sampleRingIterator) AtT() int64 {
-	return it.t
-}
-
-func (r *sampleRing) at(i int) sample {
+func (r *sampleRing) at(i int) (int64, float64) {
 	j := (r.f + i) % len(r.buf)
-	return r.buf[j]
+	s := r.buf[j]
+	return s.t, s.v
 }
 
 // add adds a sample to the ring buffer and frees all samples that fall
 // out of the delta range.
-func (r *sampleRing) add(s sample) {
+func (r *sampleRing) add(t int64, v float64) {
 	l := len(r.buf)
 	// Grow the ring buffer if it fits no more elements.
 	if l == r.l {
@@ -312,11 +224,11 @@ func (r *sampleRing) add(s sample) {
 		}
 	}
 
-	r.buf[r.i] = s
+	r.buf[r.i] = sample{t: t, v: v}
 	r.l++
 
 	// Free head of the buffer of samples that just fell out of the range.
-	tmin := s.t - r.delta
+	tmin := t - r.delta
 	for r.buf[r.f].t < tmin {
 		r.f++
 		if r.f >= l {
@@ -352,17 +264,18 @@ func (r *sampleRing) reduceDelta(delta int64) bool {
 }
 
 // nthLast returns the nth most recent element added to the ring.
-func (r *sampleRing) nthLast(n int) (sample, bool) {
+func (r *sampleRing) nthLast(n int) (int64, float64, bool) {
 	if n > r.l {
-		return sample{}, false
+		return 0, 0, false
 	}
-	return r.at(r.l - n), true
+	t, v := r.at(r.l - n)
+	return t, v, true
 }
 
 func (r *sampleRing) samples() []sample {
 	res := make([]sample, r.l)
 
-	k := r.f + r.l
+	var k = r.f + r.l
 	var j int
 	if k > len(r.buf) {
 		k = len(r.buf)

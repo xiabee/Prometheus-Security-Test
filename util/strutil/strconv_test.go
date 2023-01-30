@@ -15,8 +15,6 @@ package strutil
 
 import (
 	"testing"
-
-	"github.com/stretchr/testify/require"
 )
 
 type linkTest struct {
@@ -40,22 +38,28 @@ var linkTests = []linkTest{
 
 func TestLink(t *testing.T) {
 	for _, tt := range linkTests {
-		graphLink := GraphLinkForExpression(tt.expression)
-		require.Equal(t, tt.expectedGraphLink, graphLink,
-			"GraphLinkForExpression failed for expression (%#q)", tt.expression)
+		if graphLink := GraphLinkForExpression(tt.expression); graphLink != tt.expectedGraphLink {
+			t.Errorf("GraphLinkForExpression failed for expression (%#q), want %q got %q", tt.expression, tt.expectedGraphLink, graphLink)
+		}
 
-		tableLink := TableLinkForExpression(tt.expression)
-		require.Equal(t, tt.expectedTableLink, tableLink,
-			"TableLinkForExpression failed for expression (%#q)", tt.expression)
+		if tableLink := TableLinkForExpression(tt.expression); tableLink != tt.expectedTableLink {
+			t.Errorf("TableLinkForExpression failed for expression (%#q), want %q got %q", tt.expression, tt.expectedTableLink, tableLink)
+		}
 	}
 }
 
 func TestSanitizeLabelName(t *testing.T) {
 	actual := SanitizeLabelName("fooClientLABEL")
 	expected := "fooClientLABEL"
-	require.Equal(t, expected, actual, "SanitizeLabelName failed for label (%s)", expected)
+
+	if actual != expected {
+		t.Errorf("SanitizeLabelName failed for label (%s), want %s got %s", "fooClientLABEL", expected, actual)
+	}
 
 	actual = SanitizeLabelName("barClient.LABEL$$##")
 	expected = "barClient_LABEL____"
-	require.Equal(t, expected, actual, "SanitizeLabelName failed for label (%s)", expected)
+
+	if actual != expected {
+		t.Errorf("SanitizeLabelName failed for label (%s), want %s got %s", "barClient.LABEL$$##", expected, actual)
+	}
 }

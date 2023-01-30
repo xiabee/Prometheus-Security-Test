@@ -20,25 +20,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/prometheus/prometheus/model/histogram"
-	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/model/textparse"
+	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/pkg/textparse"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage"
-	"github.com/prometheus/prometheus/tsdb/chunkenc"
 )
-
-var testHistogram = histogram.Histogram{
-	Schema:          2,
-	ZeroThreshold:   1e-128,
-	ZeroCount:       0,
-	Count:           0,
-	Sum:             20,
-	PositiveSpans:   []histogram.Span{{Offset: 0, Length: 1}},
-	PositiveBuckets: []int64{1},
-	NegativeSpans:   []histogram.Span{{Offset: 0, Length: 1}},
-	NegativeBuckets: []int64{-1},
-}
 
 var writeRequestFixture = &prompb.WriteRequest{
 	Timeseries: []prompb.TimeSeries{
@@ -50,9 +36,7 @@ var writeRequestFixture = &prompb.WriteRequest{
 				{Name: "d", Value: "e"},
 				{Name: "foo", Value: "bar"},
 			},
-			Samples:    []prompb.Sample{{Value: 1, Timestamp: 0}},
-			Exemplars:  []prompb.Exemplar{{Labels: []prompb.Label{{Name: "f", Value: "g"}}, Value: 1, Timestamp: 0}},
-			Histograms: []prompb.Histogram{HistogramToHistogramProto(0, &testHistogram)},
+			Samples: []prompb.Sample{{Value: 1, Timestamp: 0}},
 		},
 		{
 			Labels: []prompb.Label{
@@ -62,9 +46,7 @@ var writeRequestFixture = &prompb.WriteRequest{
 				{Name: "d", Value: "e"},
 				{Name: "foo", Value: "bar"},
 			},
-			Samples:    []prompb.Sample{{Value: 2, Timestamp: 1}},
-			Exemplars:  []prompb.Exemplar{{Labels: []prompb.Label{{Name: "h", Value: "i"}}, Value: 2, Timestamp: 1}},
-			Histograms: []prompb.Histogram{HistogramToHistogramProto(1, &testHistogram)},
+			Samples: []prompb.Sample{{Value: 2, Timestamp: 1}},
 		},
 	},
 }
@@ -189,9 +171,12 @@ func TestConcreteSeriesSet(t *testing.T) {
 }
 
 func TestConcreteSeriesClonesLabels(t *testing.T) {
-	lbls := labels.FromStrings("a", "b", "c", "d")
+	lbls := labels.Labels{
+		labels.Label{Name: "a", Value: "b"},
+		labels.Label{Name: "c", Value: "d"},
+	}
 	cs := concreteSeries{
-		labels: lbls,
+		labels: labels.New(lbls...),
 	}
 
 	gotLabels := cs.Labels()
@@ -202,55 +187,6 @@ func TestConcreteSeriesClonesLabels(t *testing.T) {
 
 	gotLabels = cs.Labels()
 	require.Equal(t, lbls, gotLabels)
-}
-
-func TestConcreteSeriesIterator(t *testing.T) {
-	series := &concreteSeries{
-		labels: labels.FromStrings("foo", "bar"),
-		samples: []prompb.Sample{
-			{Value: 1, Timestamp: 1},
-			{Value: 1.5, Timestamp: 1},
-			{Value: 2, Timestamp: 2},
-			{Value: 3, Timestamp: 3},
-			{Value: 4, Timestamp: 4},
-		},
-	}
-	it := series.Iterator()
-
-	// Seek to the first sample with ts=1.
-	require.Equal(t, chunkenc.ValFloat, it.Seek(1))
-	ts, v := it.At()
-	require.Equal(t, int64(1), ts)
-	require.Equal(t, 1., v)
-
-	// Seek one further, next sample still has ts=1.
-	require.Equal(t, chunkenc.ValFloat, it.Next())
-	ts, v = it.At()
-	require.Equal(t, int64(1), ts)
-	require.Equal(t, 1.5, v)
-
-	// Seek again to 1 and make sure we stay where we are.
-	require.Equal(t, chunkenc.ValFloat, it.Seek(1))
-	ts, v = it.At()
-	require.Equal(t, int64(1), ts)
-	require.Equal(t, 1.5, v)
-
-	// Another seek.
-	require.Equal(t, chunkenc.ValFloat, it.Seek(3))
-	ts, v = it.At()
-	require.Equal(t, int64(3), ts)
-	require.Equal(t, 3., v)
-
-	// And we don't go back.
-	require.Equal(t, chunkenc.ValFloat, it.Seek(2))
-	ts, v = it.At()
-	require.Equal(t, int64(3), ts)
-	require.Equal(t, 3., v)
-
-	// Seek beyond the end.
-	require.Equal(t, chunkenc.ValNone, it.Seek(5))
-	// And we don't go back. (This exposes issue #10027.)
-	require.Equal(t, chunkenc.ValNone, it.Seek(2))
 }
 
 func TestFromQueryResultWithDuplicates(t *testing.T) {
@@ -354,16 +290,10 @@ func TestMetricTypeToMetricTypeProto(t *testing.T) {
 }
 
 func TestDecodeWriteRequest(t *testing.T) {
-	buf, _, err := buildWriteRequest(writeRequestFixture.Timeseries, nil, nil, nil)
+	buf, _, err := buildWriteRequest(writeRequestFixture.Timeseries, nil, nil)
 	require.NoError(t, err)
 
 	actual, err := DecodeWriteRequest(bytes.NewReader(buf))
 	require.NoError(t, err)
 	require.Equal(t, writeRequestFixture, actual)
-}
-
-func TestNilHistogramProto(t *testing.T) {
-	// This function will panic if it impromperly handles nil
-	// values, causing the test to fail.
-	HistogramProtoToHistogram(prompb.Histogram{})
 }

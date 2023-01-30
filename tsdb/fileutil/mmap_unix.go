@@ -11,8 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows && !plan9 && !js
-// +build !windows,!plan9,!js
+// +build !windows,!plan9
 
 package fileutil
 

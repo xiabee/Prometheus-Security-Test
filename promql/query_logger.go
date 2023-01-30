@@ -23,8 +23,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/edsrzf/mmap-go"
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 )
 
 type ActiveQueryTracker struct {
@@ -64,7 +64,6 @@ func logUnfinishedQueries(filename string, filesize int, logger log.Logger) {
 			level.Error(logger).Log("msg", "Failed to open query log file", "err", err)
 			return
 		}
-		defer fd.Close()
 
 		brokenJSON := make([]byte, filesize)
 		_, err = fd.Read(brokenJSON)
@@ -82,13 +81,10 @@ func logUnfinishedQueries(filename string, filesize int, logger log.Logger) {
 }
 
 func getMMapedFile(filename string, filesize int, logger log.Logger) ([]byte, error) {
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o666)
+
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0666)
 	if err != nil {
-		absPath, pathErr := filepath.Abs(filename)
-		if pathErr != nil {
-			absPath = filename
-		}
-		level.Error(logger).Log("msg", "Error opening query log file", "file", absPath, "err", err)
+		level.Error(logger).Log("msg", "Error opening query log file", "file", filename, "err", err)
 		return nil, err
 	}
 
@@ -108,7 +104,7 @@ func getMMapedFile(filename string, filesize int, logger log.Logger) ([]byte, er
 }
 
 func NewActiveQueryTracker(localStoragePath string, maxConcurrent int, logger log.Logger) *ActiveQueryTracker {
-	err := os.MkdirAll(localStoragePath, 0o777)
+	err := os.MkdirAll(localStoragePath, 0777)
 	if err != nil {
 		level.Error(logger).Log("msg", "Failed to create directory for logging active queries")
 	}
@@ -151,6 +147,7 @@ func trimStringByBytes(str string, size int) string {
 func _newJSONEntry(query string, timestamp int64, logger log.Logger) []byte {
 	entry := Entry{query, timestamp}
 	jsonEntry, err := json.Marshal(entry)
+
 	if err != nil {
 		level.Error(logger).Log("msg", "Cannot create json of query", "query", query)
 		return []byte{}

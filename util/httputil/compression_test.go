@@ -17,12 +17,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
-	"io"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -62,14 +60,22 @@ func TestCompressionHandler_PlainText(t *testing.T) {
 	}
 
 	resp, err := client.Get(server.URL + "/foo_endpoint")
-	require.NoError(t, err, "client get failed with unexpected error")
+
+	if err != nil {
+		t.Error("client get failed with unexpected error")
+	}
 	defer resp.Body.Close()
-	contents, err := io.ReadAll(resp.Body)
-	require.NoError(t, err, "unexpected error while creating the response body reader")
+	contents, err := ioutil.ReadAll(resp.Body)
+
+	if err != nil {
+		t.Errorf("unexpected error while reading the response body: %s", err.Error())
+	}
 
 	expected := "Hello World!"
 	actual := string(contents)
-	require.Equal(t, expected, actual, "expected response with content")
+	if expected != actual {
+		t.Errorf("expected response with content %s, but got %s", expected, actual)
+	}
 }
 
 func TestCompressionHandler_Gzip(t *testing.T) {
@@ -89,22 +95,34 @@ func TestCompressionHandler_Gzip(t *testing.T) {
 	req.Header.Set(acceptEncodingHeader, gzipEncoding)
 
 	resp, err := client.Do(req)
-	require.NoError(t, err, "client get failed with unexpected error")
+	if err != nil {
+		t.Error("client get failed with unexpected error")
+	}
 	defer resp.Body.Close()
 
+	if err != nil {
+		t.Errorf("unexpected error while reading the response body: %s", err.Error())
+	}
+
 	actualHeader := resp.Header.Get(contentEncodingHeader)
-	require.Equal(t, gzipEncoding, actualHeader, "unexpected encoding header in response")
+
+	if actualHeader != gzipEncoding {
+		t.Errorf("expected response with encoding header %s, but got %s", gzipEncoding, actualHeader)
+	}
 
 	var buf bytes.Buffer
-	zr, err := gzip.NewReader(resp.Body)
-	require.NoError(t, err, "unexpected error while creating the response body reader")
+	zr, _ := gzip.NewReader(resp.Body)
 
 	_, err = buf.ReadFrom(zr)
-	require.NoError(t, err, "unexpected error while reading the response body")
+	if err != nil {
+		t.Error("unexpected error while reading from response body")
+	}
 
 	actual := buf.String()
 	expected := "Hello World!"
-	require.Equal(t, expected, actual, "unexpected response content")
+	if expected != actual {
+		t.Errorf("expected response with content %s, but got %s", expected, actual)
+	}
 }
 
 func TestCompressionHandler_Deflate(t *testing.T) {
@@ -124,20 +142,35 @@ func TestCompressionHandler_Deflate(t *testing.T) {
 	req.Header.Set(acceptEncodingHeader, deflateEncoding)
 
 	resp, err := client.Do(req)
-	require.NoError(t, err, "client get failed with unexpected error")
+	if err != nil {
+		t.Error("client get failed with unexpected error")
+	}
 	defer resp.Body.Close()
 
+	if err != nil {
+		t.Errorf("unexpected error while reading the response body: %s", err.Error())
+	}
+
 	actualHeader := resp.Header.Get(contentEncodingHeader)
-	require.Equal(t, deflateEncoding, actualHeader, "expected response with encoding header")
+
+	if actualHeader != deflateEncoding {
+		t.Errorf("expected response with encoding header %s, but got %s", deflateEncoding, actualHeader)
+	}
 
 	var buf bytes.Buffer
 	dr, err := zlib.NewReader(resp.Body)
-	require.NoError(t, err, "unexpected error while creating the response body reader")
+	if err != nil {
+		t.Error("unexpected error while reading from response body")
+	}
 
 	_, err = buf.ReadFrom(dr)
-	require.NoError(t, err, "unexpected error while reading the response body")
+	if err != nil {
+		t.Error("unexpected error while reading from response body")
+	}
 
 	actual := buf.String()
 	expected := "Hello World!"
-	require.Equal(t, expected, actual, "expected response with content")
+	if expected != actual {
+		t.Errorf("expected response with content %s, but got %s", expected, actual)
+	}
 }

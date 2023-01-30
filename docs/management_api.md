@@ -1,6 +1,6 @@
 ---
 title: Management API
-sort_rank: 8
+sort_rank: 7
 ---
 
 # Management API
@@ -12,7 +12,6 @@ Prometheus provides a set of management APIs to facilitate automation and integr
 
 ```
 GET /-/healthy
-HEAD /-/healthy
 ```
 
 This endpoint always returns 200 and should be used to check Prometheus health.
@@ -22,7 +21,6 @@ This endpoint always returns 200 and should be used to check Prometheus health.
 
 ```
 GET /-/ready
-HEAD /-/ready
 ```
 
 This endpoint returns 200 when Prometheus is ready to serve traffic (i.e. respond to queries).

@@ -24,7 +24,7 @@ import (
 type multiError []error
 
 // NewMulti returns multiError with provided errors added if not nil.
-func NewMulti(errs ...error) multiError { // nolint:revive
+func NewMulti(errs ...error) multiError { // nolint:golint
 	m := multiError{}
 	m.Add(errs...)
 	return m

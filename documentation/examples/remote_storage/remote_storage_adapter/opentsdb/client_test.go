@@ -14,18 +14,21 @@
 package opentsdb
 
 import (
+	"bytes"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/prometheus/common/model"
-	"github.com/stretchr/testify/require"
 )
 
-var metric = model.Metric{
-	model.MetricNameLabel: "test:metric",
-	"testlabel":           "test:value",
-	"many_chars":          "abc!ABC:012-3!45ö67~89./",
-}
+var (
+	metric = model.Metric{
+		model.MetricNameLabel: "test:metric",
+		"testlabel":           "test:value",
+		"many_chars":          "abc!ABC:012-3!45ö67~89./",
+	}
+)
 
 func TestTagsFromMetric(t *testing.T) {
 	expected := map[string]TagValue{
@@ -33,7 +36,9 @@ func TestTagsFromMetric(t *testing.T) {
 		"many_chars": TagValue("abc!ABC:012-3!45ö67~89./"),
 	}
 	actual := tagsFromMetric(metric)
-	require.Equal(t, expected, actual)
+	if !reflect.DeepEqual(actual, expected) {
+		t.Errorf("Expected %#v, got %#v", expected, actual)
+	}
 }
 
 func TestMarshalStoreSamplesRequest(t *testing.T) {
@@ -46,11 +51,25 @@ func TestMarshalStoreSamplesRequest(t *testing.T) {
 	expectedJSON := []byte(`{"metric":"test_.metric","timestamp":4711,"value":3.1415,"tags":{"many_chars":"abc_21ABC_.012-3_2145_C3_B667_7E89./","testlabel":"test_.value"}}`)
 
 	resultingJSON, err := json.Marshal(request)
-	require.NoError(t, err, "Marshal(request) resulted in err.")
-	require.Equal(t, expectedJSON, resultingJSON)
+	if err != nil {
+		t.Fatalf("Marshal(request) resulted in err: %s", err)
+	}
+	if !bytes.Equal(resultingJSON, expectedJSON) {
+		t.Errorf(
+			"Marshal(request) => %q, want %q",
+			resultingJSON, expectedJSON,
+		)
+	}
 
 	var unmarshaledRequest StoreSamplesRequest
 	err = json.Unmarshal(expectedJSON, &unmarshaledRequest)
-	require.NoError(t, err, "Unmarshal(expectedJSON, &unmarshaledRequest) resulted in err.")
-	require.Equal(t, request, unmarshaledRequest)
+	if err != nil {
+		t.Fatalf("Unmarshal(expectedJSON, &unmarshaledRequest) resulted in err: %s", err)
+	}
+	if !reflect.DeepEqual(unmarshaledRequest, request) {
+		t.Errorf(
+			"Unmarshal(expectedJSON, &unmarshaledRequest) => %#v, want %#v",
+			unmarshaledRequest, request,
+		)
+	}
 }
